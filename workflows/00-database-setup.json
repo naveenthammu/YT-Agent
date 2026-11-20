@@ -1,0 +1,61 @@
+{
+  "name": "YT-Agent 00 - Initialize Database",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "29066358-fed8-56ca-85e4-66ddf024332e",
+      "name": "Manual Setup",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "\nCREATE EXTENSION IF NOT EXISTS pgcrypto;\nCREATE SCHEMA IF NOT EXISTS yt_agent;\nCREATE TABLE IF NOT EXISTS yt_agent.jobs (\n id uuid PRIMARY KEY DEFAULT gen_random_uuid(), idempotency_key text UNIQUE NOT NULL,\n revision integer NOT NULL DEFAULT 1, status text NOT NULL DEFAULT 'queued',\n config jsonb NOT NULL, plan jsonb, manifest jsonb, manifest_hash text, approved_hash text,\n approval_token_hash text, approval_expires timestamptz,\n telegram_chat_id text NOT NULL, approver_ids jsonb NOT NULL,\n telegram_message_id text, approved_by text, approved_at timestamptz,\n publish_after timestamptz, render_credits_reserved numeric NOT NULL DEFAULT 0,\n created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), error text\n);\nCREATE TABLE IF NOT EXISTS yt_agent.assets (\n id uuid PRIMARY KEY DEFAULT gen_random_uuid(), job_id uuid NOT NULL REFERENCES yt_agent.jobs(id),\n revision integer NOT NULL, format text NOT NULL, ordinal integer NOT NULL,\n status text NOT NULL DEFAULT 'planned', title text NOT NULL, caption text NOT NULL,\n target_id text NOT NULL, visibility text NOT NULL, made_for_kids boolean NOT NULL DEFAULT false,\n contains_synthetic_media boolean NOT NULL DEFAULT true, scenes jsonb NOT NULL,\n duration_seconds integer NOT NULL, render_id text, render_stage text, media_url text,\n sha256 text, bytes bigint, render_checkpoint jsonb NOT NULL DEFAULT '{}', error text,\n render_credits numeric NOT NULL DEFAULT 0, poll_after timestamptz NOT NULL DEFAULT now(),\n poll_lease_until timestamptz, preview_state text NOT NULL DEFAULT 'pending', preview_message_id text,\n created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),\n UNIQUE(job_id,revision,format)\n);\nALTER TABLE yt_agent.assets ADD COLUMN IF NOT EXISTS source_asset_id uuid REFERENCES yt_agent.assets(id);\nCREATE INDEX IF NOT EXISTS yt_agent_assets_source ON yt_agent.assets(source_asset_id);\nCREATE TABLE IF NOT EXISTS yt_agent.publications (\n id uuid PRIMARY KEY DEFAULT gen_random_uuid(), asset_id uuid UNIQUE NOT NULL REFERENCES yt_agent.assets(id),\n job_id uuid NOT NULL REFERENCES yt_agent.jobs(id), status text NOT NULL DEFAULT 'pending',\n checkpoint jsonb NOT NULL DEFAULT '{}', result jsonb, error text,\n started_at timestamptz, updated_at timestamptz NOT NULL DEFAULT now()\n);\nCREATE TABLE IF NOT EXISTS yt_agent.audit (\n id bigserial PRIMARY KEY, job_id uuid, event text NOT NULL, detail jsonb NOT NULL DEFAULT '{}',\n created_at timestamptz NOT NULL DEFAULT now()\n);\nCREATE INDEX IF NOT EXISTS yt_agent_assets_pending ON yt_agent.assets(status,poll_after);\nCREATE INDEX IF NOT EXISTS yt_agent_publications_pending ON yt_agent.publications(status);\nCREATE INDEX IF NOT EXISTS yt_agent_jobs_created ON yt_agent.jobs(created_at);\nCREATE TABLE IF NOT EXISTS yt_agent.budgets (\n key text PRIMARY KEY, window_start timestamptz NOT NULL, used_jobs integer NOT NULL\n);\nCREATE TABLE IF NOT EXISTS yt_agent.credit_budgets (\n period text PRIMARY KEY, reserved_credits numeric NOT NULL DEFAULT 0,\n updated_at timestamptz NOT NULL DEFAULT now()\n);\nSELECT 'YT-Agent schema ready. No existing data deleted.' AS result;\n",
+        "options": {}
+      },
+      "id": "31e2420d-6bbd-5a90-8bc9-08ed98d9dfab",
+      "name": "Create YT-Agent Schema",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        260,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "CONFIGURE_POSTGRES",
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false
+    }
+  ],
+  "connections": {
+    "Manual Setup": {
+      "main": [
+        [
+          {
+            "node": "Create YT-Agent Schema",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false
+  },
+  "pinData": {},
+  "tags": []
+}
