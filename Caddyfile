@@ -1,0 +1,18 @@
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Finished videos + thumbnails (random 32-character file names), used for previews and manual uploads
+	handle /media/* {
+		reverse_proxy studio:8000
+	}
+
+	# Mobile-friendly stats dashboard - needs ?token=DASHBOARD_TOKEN
+	handle /dashboard* {
+		reverse_proxy studio:8000
+	}
+
+	# Everything else: n8n editor, webhooks and approval links
+	handle {
+		reverse_proxy n8n:5678
+	}
+}

@@ -1,0 +1,25 @@
+# Run on your own PC (Docker Desktop) - no server, no domain needed.
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+# (start-local.ps1 does this for you)
+#
+# n8n:        http://LOCAL_HOST:5678
+# previews:   http://LOCAL_HOST:8000/media/...
+# dashboard:  http://LOCAL_HOST:8000/dashboard?token=...
+# Set LOCAL_HOST in .env to this PC's Wi-Fi IP to open previews/approval links from your phone (same Wi-Fi).
+
+services:
+  n8n:
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=${LOCAL_HOST:-localhost}
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://${LOCAL_HOST:-localhost}:5678/
+      - N8N_PROXY_HOPS=0
+      - N8N_SECURE_COOKIE=false
+
+  studio:
+    ports:
+      - "8000:8000"
+    environment:
+      - PUBLIC_BASE_URL=http://${LOCAL_HOST:-localhost}:8000

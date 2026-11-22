@@ -1,0 +1,88 @@
+{
+  "id": "YtAutoErrors0003",
+  "name": "YT Autopilot - 3. Error Alerts",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "1a3b8712-8ca3-438c-8f31-d97d3436b1c2",
+      "name": "On Workflow Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = x => String(x || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst ex = $json.execution || {}, wf = $json.workflow || {};\nconst text = `🚨 <b>Workflow failed</b>: ${esc(wf.name)}\nNode: <b>${esc(ex.lastNodeExecuted)}</b>\nError: ${esc((ex.error && ex.error.message) || 'unknown').slice(0, 800)}\n${ex.url ? `<a href=\"${ex.url}\">Open the failed run</a>` : ''}`;\nreturn [{ json: { text } }];"
+      },
+      "id": "676e9893-897c-4e91-aab6-7d2a33ebe5fd",
+      "name": "Format Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "837170140",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "2be12cdb-8168-46f0-b30e-f43734e14113",
+      "name": "Telegram: Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        440,
+        300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "EdithTelegram01",
+          "name": "Telegram"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "On Workflow Error": {
+      "main": [
+        [
+          {
+            "node": "Format Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Alert": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "active": false
+}

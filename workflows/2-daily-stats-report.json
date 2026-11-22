@@ -1,0 +1,307 @@
+{
+  "id": "YtAutoStats00002",
+  "name": "YT Autopilot - 2. Daily Stats Report",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 21 * * *"
+            }
+          ]
+        }
+      },
+      "id": "5f297ddf-b27b-4c38-827a-f6ca8cd978d7",
+      "name": "Every day 9:30 PM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "db11e0a6-01df-48bb-bcb0-ee85ecba4600",
+              "name": "channel_id",
+              "value": "PUT_YOUR_CHANNEL_ID_STARTING_WITH_UC",
+              "type": "string"
+            },
+            {
+              "id": "db95b6c5-473d-46c7-b99f-b825ee5f87db",
+              "name": "telegram_chat_id",
+              "value": "837170140",
+              "type": "string"
+            },
+            {
+              "id": "f5ab6c0a-cd65-4200-aa95-a137dc53956a",
+              "name": "studio_url",
+              "value": "http://localhost:8000",
+              "type": "string"
+            },
+            {
+              "id": "a298adcf-893f-4ad3-acf5-1d6000691798",
+              "name": "dashboard_url",
+              "value": "http://localhost:8000/dashboard?token=PUT_DASHBOARD_TOKEN_FROM_.env",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6a4f8fbc-3f96-4e4e-9008-2237549cf768",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.googleapis.com/youtube/v3/playlistItems",
+        "options": {
+          "timeout": 60000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "part",
+              "value": "contentDetails"
+            },
+            {
+              "name": "playlistId",
+              "value": "={{ 'UU' + String($('Config').first().json.channel_id).slice(2) }}"
+            },
+            {
+              "name": "maxResults",
+              "value": "50"
+            }
+          ]
+        }
+      },
+      "id": "41395f99-c4f5-4d55-b161-b8018055448c",
+      "name": "Channel Uploads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.googleapis.com/youtube/v3/videos",
+        "options": {
+          "timeout": 60000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "part",
+              "value": "statistics,snippet"
+            },
+            {
+              "name": "id",
+              "value": "={{ ($json.items || []).map(i => i.contentDetails.videoId).join(',') }}"
+            }
+          ]
+        }
+      },
+      "id": "01195e53-66a0-43b7-bfd8-1519770aad84",
+      "name": "Video Stats",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config').first().json.studio_url }}/videos?days=365",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "2c769f83-5bc0-4531-a692-bba4ed9d3bf5",
+      "name": "Past Videos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Config').first().json;\nconst norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();\nconst esc = x => String(x || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst yt = ($('Video Stats').first().json.items) || [];\nconst db = ($('Past Videos').first().json.videos) || [];\nconst byYt = new Map(db.filter(v => v.youtube_id).map(v => [v.youtube_id, v]));\nconst byTitle = new Map(db.map(v => [norm(v.title), v]));\n\nconst updates = [], rows = [];\nlet total = 0;\nfor (const v of yt) {\n  const st = v.statistics || {};\n  const views = +st.viewCount || 0, likes = +st.likeCount || 0, comments = +st.commentCount || 0;\n  total += views;\n  const rec = byYt.get(v.id) || byTitle.get(norm(v.snippet?.title));   // title match covers manual uploads\n  if (rec) updates.push({ id: rec.id, youtube_id: v.id, views, likes, comments });\n  rows.push({ title: v.snippet?.title, views, likes, comments, delta: views - (rec?.views || 0) });\n}\nconst gainers = [...rows].sort((a, b) => b.delta - a.delta).slice(0, 3);\nconst best = [...rows].sort((a, b) => b.views - a.views).slice(0, 3);\nconst week = db.filter(v => Date.now() - Date.parse(v.created_at) < 7 * 864e5);\nconst byStatus = {};\nfor (const v of week) byStatus[v.status || '?'] = (byStatus[v.status || '?'] || 0) + 1;\n\nconst line = r => `• ${esc(r.title)} - ${r.views.toLocaleString('en-US')} views`;\nconst text = `📊 <b>Daily channel report</b>\nViews on last ${rows.length} uploads: <b>${total.toLocaleString('en-US')}</b>\n\n🚀 <b>Biggest gainers since yesterday</b>\n${gainers.filter(r => r.delta > 0).map(r => `${line(r)} (+${r.delta.toLocaleString('en-US')})`).join('\\n') || '• none yet'}\n\n🏆 <b>Best videos</b>\n${best.map(line).join('\\n') || '• none yet'}\n\n🛠 <b>Pipeline, last 7 days</b>: ${Object.entries(byStatus).map(([k, n]) => `${k} ${n}`).join(', ') || 'nothing made'}\n\n<a href=\"${cfg.dashboard_url}\">Open dashboard</a>`;\nreturn [{ json: { updates, text } }];"
+      },
+      "id": "48d306d1-2eb8-4ed2-8704-5818d96bd272",
+      "name": "Match & Summarize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.studio_url }}/videos/stats",
+        "options": {
+          "timeout": 60000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ updates: $json.updates }) }}"
+      },
+      "id": "0e0c9618-41ea-4cfd-b107-8763e65210f8",
+      "name": "Save Stats",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Config').first().json.telegram_chat_id }}",
+        "text": "={{ $('Match & Summarize').first().json.text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "9ae07489-3193-4d8b-96c6-23e7d695cbca",
+      "name": "Telegram: Daily Report",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1540,
+        300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "EdithTelegram01",
+          "name": "Telegram"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every day 9:30 PM": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Channel Uploads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Channel Uploads": {
+      "main": [
+        [
+          {
+            "node": "Video Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Video Stats": {
+      "main": [
+        [
+          {
+            "node": "Past Videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Past Videos": {
+      "main": [
+        [
+          {
+            "node": "Match & Summarize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match & Summarize": {
+      "main": [
+        [
+          {
+            "node": "Save Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Stats": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Daily Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true,
+    "errorWorkflow": "YtAutoErrors0003"
+  },
+  "pinData": {},
+  "active": false
+}

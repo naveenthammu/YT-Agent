@@ -1,0 +1,1262 @@
+{
+  "id": "YtAutoCreate0001",
+  "name": "YT Autopilot - 1. Create & Publish",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "23079e3e-b990-4cb8-9b24-7ae5f0164e54",
+      "name": "Every day 9 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e06316b8-41fc-41f7-8256-9293302f7b61",
+              "name": "channel_niche",
+              "value": "Cloud computing, DevOps and AI tools explained simply",
+              "type": "string"
+            },
+            {
+              "id": "4085204d-a294-41c4-98f9-5a020e5ab7ba",
+              "name": "audience",
+              "value": "Indian IT professionals, freshers and students who want practical skills and better jobs",
+              "type": "string"
+            },
+            {
+              "id": "1765c46e-6f59-4965-aca3-b59ed587fc7d",
+              "name": "creator_notes",
+              "value": "Speak like a working cloud/DevOps engineer: practical, direct, real-world examples, no hype. EDIT THIS: add your own opinions, experiences and catchphrases so every video sounds like you.",
+              "type": "string"
+            },
+            {
+              "id": "cccdb739-0119-484c-9a49-ea0705c9bc6a",
+              "name": "language",
+              "value": "English",
+              "type": "string"
+            },
+            {
+              "id": "0ffb076f-cf11-4c8c-87ce-2fa212681971",
+              "name": "region",
+              "value": "IN",
+              "type": "string"
+            },
+            {
+              "id": "bd310449-5a66-448a-abd8-e6765f5093f9",
+              "name": "trends_geo",
+              "value": "IN",
+              "type": "string"
+            },
+            {
+              "id": "29bb9d4e-c5a1-4c4f-9728-f3e29d7f9a65",
+              "name": "youtube_category_id",
+              "value": "28",
+              "type": "string"
+            },
+            {
+              "id": "814cbe37-9650-4820-b1ec-d05479b16180",
+              "name": "video_format",
+              "value": "short",
+              "type": "string"
+            },
+            {
+              "id": "603cb986-0336-4d5d-bc76-b6eb9cab60be",
+              "name": "video_styles",
+              "value": "Myth vs reality|3 things most people get wrong|Step-by-step quick guide|What this news means for you|X vs Y: which one should you pick|One mistake that costs you time or money|Explain it like I'm new",
+              "type": "string"
+            },
+            {
+              "id": "488351be-1df4-4f1f-ad06-a2db1e39472a",
+              "name": "voice",
+              "value": "af_heart",
+              "type": "string"
+            },
+            {
+              "id": "00fc25e5-02ba-401e-a50b-ffa795befc08",
+              "name": "speed",
+              "value": 1.0,
+              "type": "number"
+            },
+            {
+              "id": "abc3ceec-c9a4-47ad-aa36-304500dfa7ca",
+              "name": "music",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "3e1b3676-00e4-4a84-ad88-d5f5d6c07067",
+              "name": "llm_base_url",
+              "value": "https://api.deepseek.com/v1",
+              "type": "string"
+            },
+            {
+              "id": "1535aaf8-494f-4ee7-887c-30d702a17360",
+              "name": "llm_model",
+              "value": "deepseek-v4-flash",
+              "type": "string"
+            },
+            {
+              "id": "b6526e77-267b-4a82-80be-714f4595ed82",
+              "name": "publish_mode",
+              "value": "manual",
+              "type": "string"
+            },
+            {
+              "id": "00047f6e-bec3-4760-8f8a-7f5d6bcba4b4",
+              "name": "require_approval",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "7b25cad4-7705-4829-b1e2-db8a2c3ef45e",
+              "name": "privacy",
+              "value": "public",
+              "type": "string"
+            },
+            {
+              "id": "8922468d-cf45-46d7-9b69-ab09f79b1e11",
+              "name": "telegram_chat_id",
+              "value": "837170140",
+              "type": "string"
+            },
+            {
+              "id": "016c936f-5366-437d-a4d3-efe79fffe170",
+              "name": "studio_url",
+              "value": "http://localhost:8000",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1ffb27e-8201-49c7-ba00-7ca079601ebe",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://trends.google.com/trending/rss?geo={{ $('Config').first().json.trends_geo }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "id": "a65ccc23-3029-4400-9260-8b588657a20a",
+      "name": "Google Trends",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.googleapis.com/youtube/v3/videos",
+        "options": {
+          "timeout": 60000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "part",
+              "value": "snippet,statistics"
+            },
+            {
+              "name": "chart",
+              "value": "mostPopular"
+            },
+            {
+              "name": "regionCode",
+              "value": "={{ $('Config').first().json.region }}"
+            },
+            {
+              "name": "videoCategoryId",
+              "value": "={{ $('Config').first().json.youtube_category_id }}"
+            },
+            {
+              "name": "maxResults",
+              "value": "25"
+            }
+          ]
+        }
+      },
+      "id": "336b184d-9525-4b1d-bd38-9a96d1f371e0",
+      "name": "YouTube Trending",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config').first().json.studio_url }}/videos?days=180",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "1b8ce5e1-819a-409b-b7b7-f1c13ba97528",
+      "name": "Past Videos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Gather trend signals + our own history, then build the \"pick a topic\" prompt.\nconst cfg = $('Config').first().json;\nconst decode = s => String(s || '')\n  .replace(/<!\\[CDATA\\[|\\]\\]>/g, '')\n  .replace(/&amp;/g, '&').replace(/&quot;/g, '\"').replace(/&#39;|&apos;/g, \"'\")\n  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim();\n\n// 1) Google Trends RSS\nconst trends = [];\nconst rss = String($('Google Trends').first().json.data || '');\nfor (const m of rss.matchAll(/<item>([\\s\\S]*?)<\\/item>/g)) {\n  const block = m[1];\n  const tag = t => { const r = block.match(new RegExp('<' + t + '>([\\\\s\\\\S]*?)</' + t + '>')); return r ? decode(r[1]) : ''; };\n  const title = tag('title');\n  if (!title) continue;\n  const news = [...block.matchAll(/<ht:news_item_title>([\\s\\S]*?)<\\/ht:news_item_title>/g)]\n    .map(x => decode(x[1])).slice(0, 2);\n  trends.push(`${title} (${tag('ht:approx_traffic') || '?'} searches)` + (news.length ? ' - news: ' + news.join(' | ') : ''));\n}\n\n// 2) YouTube most-popular in our category\nconst youtube = (($('YouTube Trending').first().json || {}).items || []).map(v =>\n  `${v.snippet?.title} (${Number(v.statistics?.viewCount || 0).toLocaleString('en-US')} views)`);\n\n// 3) Our history: avoid repeats, learn from winners\nconst vids = (($('Past Videos').first().json || {}).videos) || [];\nconst recent = vids.slice(0, 60).map(v => v.topic || v.title).filter(Boolean);\nconst top = vids.filter(v => (v.views || 0) > 0)\n  .sort((a, b) => (b.views || 0) - (a.views || 0)).slice(0, 5)\n  .map(v => `${v.title} - ${v.views} views`);\n\nconst list = (arr, empty) => arr.length ? arr.map(x => '- ' + x).join('\\n') : empty;\nconst user = `CHANNEL NICHE: ${cfg.channel_niche}\nTARGET AUDIENCE: ${cfg.audience}\nLANGUAGE: ${cfg.language}\nVIDEO FORMAT: ${cfg.video_format === 'short' ? 'YouTube Short (under 60 seconds)' : 'long-form video (6-8 minutes)'}\n\nTRENDING GOOGLE SEARCHES (${cfg.trends_geo}, last 24h):\n${list(trends.slice(0, 20), '- (none available today)')}\n\nTRENDING YOUTUBE VIDEOS IN OUR CATEGORY:\n${list(youtube.slice(0, 20), '- (none available today)')}\n\nOUR BEST-PERFORMING VIDEOS (make more like these):\n${list(top, '- (no data yet)')}\n\nTOPICS WE ALREADY COVERED (never repeat these):\n${list(recent, '- (none yet)')}\n\nRules:\n1. Stay inside the niche. Use a trend only if it genuinely connects to the niche; otherwise choose a strong evergreen topic in the niche that people actively search for.\n2. Prefer topics with a clear viewer benefit: save money, save time, avoid a mistake, get a job/skill, understand news that affects them.\n3. Avoid medical, legal or personal-investment advice, tragedies, politics, and real people's private lives.\n4. Never invent facts or numbers.\n\nReturn JSON only:\n{\"topic\": \"...\", \"angle\": \"the specific promise/hook of the video\", \"why_now\": \"...\", \"search_keywords\": [\"...\", \"...\"], \"source\": \"google_trends | youtube_trending | evergreen\"}`;\n\nreturn [{ json: {\n  trends_found: trends.length, youtube_found: youtube.length, recent, top,\n  llm_body: {\n    model: cfg.llm_model, temperature: 0.7, response_format: { type: 'json_object' },\n    messages: [\n      { role: 'system', content: 'You are the content strategist for a YouTube channel. You pick ONE video topic per run that will earn the most views from the target audience while staying inside the niche. Reply with JSON only.' },\n      { role: 'user', content: user }\n    ]\n  }\n}}];"
+      },
+      "id": "25dc7e4b-8954-4d41-9f9d-b70a30229e34",
+      "name": "Collect Signals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.llm_base_url }}/chat/completions",
+        "options": {
+          "timeout": 180000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.llm_body) }}"
+      },
+      "id": "4fd16484-025a-44fb-b217-1511caa9470a",
+      "name": "AI: Pick Topic",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.choices?.[0]?.message?.content ?? '';\nfunction parseJSON(s) {\n  s = String(s).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();\n  const a = s.indexOf('{'), b = s.lastIndexOf('}');\n  if (a < 0 || b < 0) throw new Error('AI did not return JSON: ' + s.slice(0, 200));\n  return JSON.parse(s.slice(a, b + 1));\n}\nconst t = parseJSON(raw);\nif (!t.topic) throw new Error('AI returned no topic');\nconst norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();\nconst recent = ($('Collect Signals').first().json.recent || []).map(norm);\nif (recent.includes(norm(t.topic))) throw new Error('AI picked a topic we already covered: ' + t.topic);\nreturn [{ json: {\n  topic: String(t.topic).slice(0, 200), angle: t.angle || '', why_now: t.why_now || '',\n  keywords: Array.isArray(t.search_keywords) ? t.search_keywords.slice(0, 8) : [],\n  source: t.source || '', redo_count: 0\n}}];"
+      },
+      "id": "a88ef878-bf70-47ba-a9a5-07e67a899b53",
+      "name": "Parse Topic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Builds the script-writing prompt. A random style each run keeps videos from looking templated.\nconst cfg = $('Config').first().json;\nconst t = $input.first().json;\nconst styles = String(cfg.video_styles).split('|').map(s => s.trim()).filter(Boolean);\nconst style = styles[Math.floor(Math.random() * styles.length)] || 'Quick explainer';\nconst isShort = cfg.video_format === 'short';\nconst length = isShort ? '110-150 spoken words (45-60 seconds)' : '850-1100 spoken words (6-8 minutes)';\nconst segs = isShort ? '6-9' : '14-22';\nconst redoNote = t.redo_count > 0\n  ? `\\nIMPORTANT: the editor rejected the previous script for this topic. Write a clearly different take (different hook, structure and examples).\\n` : '';\n\nconst user = `Write a ${isShort ? 'YouTube Short' : 'long-form YouTube video'} script.\n\nTOPIC: ${t.topic}\nANGLE / PROMISE: ${t.angle}\nSTYLE FOR THIS VIDEO: ${style}\nNICHE: ${cfg.channel_niche}\nAUDIENCE: ${cfg.audience}\nLANGUAGE: ${cfg.language}\nCREATOR VOICE: ${cfg.creator_notes}\nLENGTH: ${length}, split into ${segs} segments.\n${redoNote}\nRules:\n- First sentence is the hook: a surprising fact, a bold claim you can back up, or a question. No greetings, no \"in this video\".\n- Spoken style: short sentences, simple words, one idea per sentence.\n- Give at least one specific, genuinely useful takeaway the viewer can act on today. Add real insight or opinion, not generic filler.\n- Never invent statistics, quotes, prices or dates. If unsure, say it without a number.\n- Each segment has \"text\" (1-3 sentences, exactly what the narrator says) and \"visual_query\" (2-4 word concrete stock-footage search that can be filmed, e.g. \"person typing laptop\", \"server room lights\", \"city traffic night\"; never abstract words).\n- End with one natural call to action (comment question or subscribe), max one sentence.\n- title: max 70 characters, curiosity + main keyword, honest (no clickbait lies), no ALL CAPS.\n- description: 2-3 short paragraphs using the main keywords naturally, then 3 relevant hashtags${isShort ? ' including #Shorts' : ''}.\n- tags: 8-15 search phrases.\n- thumbnail_text: max 5 punchy words.\n- pinned_comment: a question that invites replies.\n\nReturn JSON only:\n{\"title\": \"...\", \"description\": \"...\", \"tags\": [\"...\"], \"thumbnail_text\": \"...\", \"pinned_comment\": \"...\", \"segments\": [{\"text\": \"...\", \"visual_query\": \"...\"}]}`;\n\nreturn [{ json: { ...t, style, llm_body: {\n  model: cfg.llm_model, temperature: 0.85, response_format: { type: 'json_object' },\n  messages: [\n    { role: 'system', content: 'You are an expert YouTube scriptwriter who writes original, high-retention scripts. Reply with JSON only.' },\n    { role: 'user', content: user }\n  ]\n}}}];"
+      },
+      "id": "b86a5ca9-3d0e-426d-8841-10197c7b3680",
+      "name": "Build Script Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.llm_base_url }}/chat/completions",
+        "options": {
+          "timeout": 240000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.llm_body) }}"
+      },
+      "id": "7610466d-9bf6-4441-9f79-906e57c59ce6",
+      "name": "AI: Write Script",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Config').first().json;\nconst req = $('Build Script Prompt').last().json;\nconst raw = $json.choices?.[0]?.message?.content ?? '';\nfunction parseJSON(s) {\n  s = String(s).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();\n  const a = s.indexOf('{'), b = s.lastIndexOf('}');\n  if (a < 0 || b < 0) throw new Error('AI did not return JSON: ' + s.slice(0, 200));\n  return JSON.parse(s.slice(a, b + 1));\n}\nconst s = parseJSON(raw);\nconst isShort = cfg.video_format === 'short';\nconst segments = (Array.isArray(s.segments) ? s.segments : [])\n  .map(x => ({ text: String(x.text || '').trim().slice(0, 1100), visual_query: String(x.visual_query || '').trim().slice(0, 100) }))\n  .filter(x => x.text.length > 0)\n  .slice(0, isShort ? 12 : 40);\nif (segments.length < 3) throw new Error('Script too short: ' + segments.length + ' segments');\nconst words = segments.reduce((n, x) => n + x.text.split(/\\s+/).length, 0);\nif (isShort && words > 190) throw new Error(`Short script too long (${words} words) - would exceed 60s`);\n\nlet title = String(s.title || req.topic).replace(/\\s+/g, ' ').trim().slice(0, 95);\nlet description = String(s.description || '').trim();\nif (isShort && !/#shorts/i.test(description)) description += '\\n\\n#Shorts';\ndescription = (description + '\\n\\nStock footage: Pexels / Pixabay').slice(0, 4900);\n\nconst tags = []; let len = 0;\nfor (const t of (Array.isArray(s.tags) ? s.tags : [])) {\n  const tag = String(t).replace(/[<>,]/g, '').trim();\n  if (!tag || len + tag.length + 1 > 450) continue;\n  tags.push(tag); len += tag.length + 1;\n}\nconst esc = x => String(x || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nreturn [{ json: {\n  topic: req.topic, angle: req.angle, style: req.style, redo_count: req.redo_count || 0,\n  title, description, tags, tags_csv: tags.join(','), thumbnail_text: String(s.thumbnail_text || title).slice(0, 40),\n  pinned_comment: String(s.pinned_comment || ''), word_count: words,\n  title_html: esc(title), topic_html: esc(req.topic), style_html: esc(req.style), description_html: esc(description.slice(0, 2200)),\n  tags_html: esc(tags.join(', ')), pinned_html: esc(s.pinned_comment || ''),\n  render_body: { format: cfg.video_format, voice: cfg.voice, speed: Number(cfg.speed) || 1,\n                 music: String(cfg.music) === 'true', title, thumbnail_text: String(s.thumbnail_text || title).slice(0, 40), segments }\n}}];"
+      },
+      "id": "068b443d-747b-450c-8daf-2c4b89501b90",
+      "name": "Parse Script",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.studio_url }}/render",
+        "options": {
+          "timeout": 1800000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.render_body) }}"
+      },
+      "id": "506981c6-944d-4d02-8b5d-baf7ef0aa82e",
+      "name": "Render Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2420,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 10000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.studio_url }}/videos",
+        "options": {
+          "timeout": 60000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ id: $('Render Video').last().json.id, topic: $('Parse Script').last().json.topic, angle: $('Parse Script').last().json.angle, title: $('Parse Script').last().json.title, format: $('Render Video').last().json.format, status: 'rendered', video_url: $('Render Video').last().json.public_video_url, thumb_url: $('Render Video').last().json.public_thumb_url }) }}"
+      },
+      "id": "f375f7f5-899f-461b-acab-ecf15ea39f0d",
+      "name": "Log: Rendered",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2640,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "97162852-fe74-4f6c-92b7-4e414607bff3",
+              "leftValue": "={{ $('Render Video').last().json.size_mb }}",
+              "rightValue": 48,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "73d825fb-10a9-450f-ab56-e52939c302f5",
+      "name": "Fits in Telegram?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Render Video').last().json.internal_video_url }}",
+        "options": {
+          "timeout": 600000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "id": "9930f403-69d2-4193-a388-8bb1c934fd6e",
+      "name": "Download Preview",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3080,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendVideo",
+        "chatId": "={{ $('Config').first().json.telegram_chat_id }}",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "additionalFields": {
+          "caption": "=🎬 <b>{{ $('Parse Script').last().json.title_html }}</b>",
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "c7814338-54df-4825-9f3c-90999934bf0e",
+      "name": "Telegram: Send Preview",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3300,
+        200
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true,
+      "credentials": {
+        "telegramApi": {
+          "id": "EdithTelegram01",
+          "name": "Telegram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "bbccf8a7-db40-457e-bfc1-6f384897cf6c",
+              "leftValue": "={{ $('Config').first().json.publish_mode }}",
+              "rightValue": "api",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "ab8b29c2-7f53-43bf-a476-ef53c52fc73d",
+      "name": "Upload via API?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Config').first().json.telegram_chat_id }}",
+        "text": "=🎬 <b>New video ready to upload</b> ({{ $('Render Video').last().json.format }}, {{ $('Render Video').last().json.duration_sec }}s)\n\n<b>Title</b>\n{{ $('Parse Script').last().json.title_html }}\n\nVideo sent above. Home Wi-Fi links: <a href=\"{{ $('Render Video').last().json.public_video_url }}\">video</a>  ·  <a href=\"{{ $('Render Video').last().json.public_thumb_url }}\">thumbnail</a>\n\n<b>Description</b>\n{{ $('Parse Script').last().json.description_html }}\n\n<b>Tags</b>\n{{ $('Parse Script').last().json.tags_html }}\n\n💬 <b>Pin this comment:</b> {{ $('Parse Script').last().json.pinned_html }}\n\nUpload in the YouTube app, then paste the title, description and tags.",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "6aa6976c-64eb-4ec9-8e26-6fc836a2e546",
+      "name": "Telegram: Manual Upload Pack",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3740,
+        520
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "EdithTelegram01",
+          "name": "Telegram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.studio_url }}/videos",
+        "options": {
+          "timeout": 60000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ id: $('Render Video').last().json.id, status: 'ready_manual' }) }}"
+      },
+      "id": "2e3c59b0-f04c-4eea-b8bc-9d2bf11973ac",
+      "name": "Log: Ready Manual",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3960,
+        520
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "b56904d0-5807-41ab-a63c-e0ca190a133b",
+              "leftValue": "={{ String($('Config').first().json.require_approval) }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "40977711-9440-425f-b3c5-937121a612fc",
+      "name": "Needs Approval?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3740,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Config').first().json.telegram_chat_id }}",
+        "text": "=🎬 <b>Review new video</b>\n{{ $('Parse Script').last().json.title_html }}\n\n▶️ Preview sent above (home Wi-Fi: <a href=\"{{ $('Render Video').last().json.public_video_url }}\">video</a>  ·  <a href=\"{{ $('Render Video').last().json.public_thumb_url }}\">thumbnail</a>)\nTopic: {{ $('Parse Script').last().json.topic_html }} | Style: {{ $('Parse Script').last().json.style_html }} | {{ $('Render Video').last().json.duration_sec }}s\n\n✅ <a href=\"{{ $execution.resumeUrl }}?action=approve\">Publish</a>\n🔁 <a href=\"{{ $execution.resumeUrl }}?action=redo\">Rewrite and re-render</a>\n❌ <a href=\"{{ $execution.resumeUrl }}?action=reject\">Reject</a>\n\nNo answer in 12 hours = rejected.",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "62cb2ffe-ccde-462d-b437-c4798f908a6a",
+      "name": "Telegram: Ask Approval",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3960,
+        100
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "EdithTelegram01",
+          "name": "Telegram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "GET",
+        "limitWaitTime": true,
+        "limitType": "afterTimeInterval",
+        "resumeAmount": 12,
+        "resumeUnit": "hours",
+        "options": {}
+      },
+      "id": "7f7cb500-ba6d-4e7f-8093-ce8d11f2d656",
+      "name": "Wait for Approval",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        4180,
+        100
+      ],
+      "webhookId": "bb1a2d78-4a0a-4259-801c-9533f9c36bbb"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "d4af67a1-36e2-4d2c-b578-cb4447464cdf",
+              "leftValue": "={{ $json.query?.action ?? 'timeout' }}",
+              "rightValue": "approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "d3942759-fb56-41f9-8992-77bca63f6f3b",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4400,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "0343c57f-8f9b-42db-bd68-fed3f43f46a9",
+              "leftValue": "={{ $json.query?.action ?? 'timeout' }}",
+              "rightValue": "redo",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "adff7316-785a-4de7-b810-0597c6ac5311",
+              "leftValue": "={{ $('Build Script Prompt').last().json.redo_count ?? 0 }}",
+              "rightValue": 2,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "137e1538-84ca-412c-a76d-e2eff2bac5cd",
+      "name": "Redo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4620,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $('Parse Topic').first().json;\nconst prev = $('Build Script Prompt').last().json;\nreturn [{ json: { topic: t.topic, angle: t.angle, why_now: t.why_now, keywords: t.keywords,\n                  source: t.source, redo_count: (prev.redo_count || 0) + 1 } }];"
+      },
+      "id": "52e70561-bbcd-41b3-a3ea-695c4018c4b2",
+      "name": "Prepare Redo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4840,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.studio_url }}/videos",
+        "options": {
+          "timeout": 60000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ id: $('Render Video').last().json.id, status: 'rejected' }) }}"
+      },
+      "id": "7354bc9d-dea3-4462-83b2-c586caa640db",
+      "name": "Log: Rejected",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4840,
+        360
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Render Video').last().json.internal_video_url }}",
+        "options": {
+          "timeout": 600000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "id": "7a196727-7281-4226-9eff-8afc11e956eb",
+      "name": "Download Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4840,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "video",
+        "operation": "upload",
+        "title": "={{ $('Parse Script').last().json.title }}",
+        "regionCode": "={{ $('Config').first().json.region }}",
+        "categoryId": "={{ $('Config').first().json.youtube_category_id }}",
+        "binaryProperty": "data",
+        "options": {
+          "description": "={{ $('Parse Script').last().json.description }}",
+          "tags": "={{ $('Parse Script').last().json.tags_csv }}",
+          "privacyStatus": "={{ $('Config').first().json.privacy }}",
+          "selfDeclaredMadeForKids": false,
+          "notifySubscribers": true
+        }
+      },
+      "id": "69309c01-acd1-438b-93ab-bb73ccb1e5ca",
+      "name": "Upload to YouTube",
+      "type": "n8n-nodes-base.youTube",
+      "typeVersion": 1,
+      "position": [
+        5060,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 30000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Render Video').last().json.internal_thumb_url }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "id": "73aa692f-4096-45d6-8ff6-31f33a6f0137",
+      "name": "Download Thumbnail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5280,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={{ $('Upload to YouTube').last().json.id }}",
+        "options": {
+          "timeout": 60000
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "youTubeOAuth2Api",
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data"
+      },
+      "id": "80fd5577-22d3-4a11-a211-8d9247885ed4",
+      "name": "Set Thumbnail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5500,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.studio_url }}/videos",
+        "options": {
+          "timeout": 60000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ id: $('Render Video').last().json.id, status: 'published', youtube_id: $('Upload to YouTube').last().json.id }) }}"
+      },
+      "id": "2c7f0fce-7b29-4bd2-ba37-b6944d779674",
+      "name": "Log: Published",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5720,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Config').first().json.telegram_chat_id }}",
+        "text": "=✅ <b>Published</b>\n{{ $('Parse Script').last().json.title_html }}\nhttps://youtu.be/{{ $('Upload to YouTube').last().json.id }}\n\n💬 Pin this comment: {{ $('Parse Script').last().json.pinned_html }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "4a3f4b67-029a-473b-8723-7d2f8ba077df",
+      "name": "Telegram: Published",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        5940,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "EdithTelegram01",
+          "name": "Telegram"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every day 9 AM": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Google Trends",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Trends": {
+      "main": [
+        [
+          {
+            "node": "YouTube Trending",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube Trending": {
+      "main": [
+        [
+          {
+            "node": "Past Videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Past Videos": {
+      "main": [
+        [
+          {
+            "node": "Collect Signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Signals": {
+      "main": [
+        [
+          {
+            "node": "AI: Pick Topic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Pick Topic": {
+      "main": [
+        [
+          {
+            "node": "Parse Topic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Topic": {
+      "main": [
+        [
+          {
+            "node": "Build Script Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Script Prompt": {
+      "main": [
+        [
+          {
+            "node": "AI: Write Script",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Write Script": {
+      "main": [
+        [
+          {
+            "node": "Parse Script",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Script": {
+      "main": [
+        [
+          {
+            "node": "Render Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render Video": {
+      "main": [
+        [
+          {
+            "node": "Log: Rendered",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log: Rendered": {
+      "main": [
+        [
+          {
+            "node": "Fits in Telegram?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Preview": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Send Preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Send Preview": {
+      "main": [
+        [
+          {
+            "node": "Upload via API?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Manual Upload Pack": {
+      "main": [
+        [
+          {
+            "node": "Log: Ready Manual",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Ask Approval": {
+      "main": [
+        [
+          {
+            "node": "Wait for Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for Approval": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Redo": {
+      "main": [
+        [
+          {
+            "node": "Build Script Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Video": {
+      "main": [
+        [
+          {
+            "node": "Upload to YouTube",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload to YouTube": {
+      "main": [
+        [
+          {
+            "node": "Download Thumbnail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Thumbnail": {
+      "main": [
+        [
+          {
+            "node": "Set Thumbnail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Thumbnail": {
+      "main": [
+        [
+          {
+            "node": "Log: Published",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log: Published": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Published",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fits in Telegram?": {
+      "main": [
+        [
+          {
+            "node": "Download Preview",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Upload via API?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload via API?": {
+      "main": [
+        [
+          {
+            "node": "Needs Approval?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram: Manual Upload Pack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Approval?": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Ask Approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Download Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Download Video",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Redo?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redo?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Redo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log: Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true,
+    "errorWorkflow": "YtAutoErrors0003"
+  },
+  "pinData": {},
+  "active": false
+}

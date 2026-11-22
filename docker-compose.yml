@@ -1,0 +1,71 @@
+# YT Autopilot - everything runs on one small server.
+#   caddy  -> HTTPS + public routes (n8n UI/webhooks, /media previews, /dashboard)
+#   n8n    -> the automation brain (workflows, schedules, approvals)
+#   kokoro -> free, self-hosted text-to-speech (no per-character fees)
+#   studio -> renders videos with ffmpeg, stores history + stats (SQLite)
+
+services:
+  caddy:
+    image: caddy:2
+    profiles: ["server"]          # only on a public server:  docker compose --profile server up -d
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [n8n, studio]
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      - N8N_HOST=${DOMAIN}
+      - N8N_PROTOCOL=https
+      - N8N_PORT=5678
+      - WEBHOOK_URL=https://${DOMAIN}/
+      - N8N_PROXY_HOPS=1
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - GENERIC_TIMEZONE=${TZ:-Asia/Kolkata}
+      - TZ=${TZ:-Asia/Kolkata}
+      # big video files go to disk, not RAM
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      # keep the database small: delete execution logs older than 14 days
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=336
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_PERSONALIZATION_ENABLED=false
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+  kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:${KOKORO_VERSION:-latest}
+    restart: unless-stopped
+
+  studio:
+    build: ./studio
+    restart: unless-stopped
+    environment:
+      - PEXELS_API_KEY=${PEXELS_API_KEY}
+      - PIXABAY_API_KEY=${PIXABAY_API_KEY}
+      - PUBLIC_BASE_URL=https://${DOMAIN}
+      # how n8n reaches the studio: http://studio:8000 (n8n in Docker) or http://localhost:8000 (n8n installed on Windows)
+      - INTERNAL_BASE_URL=${STUDIO_INTERNAL_URL:-http://studio:8000}
+      - KOKORO_URL=http://kokoro:8880
+      - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
+      - MEDIA_RETENTION_DAYS=${MEDIA_RETENTION_DAYS:-7}
+      - TZ=${TZ:-Asia/Kolkata}
+    volumes:
+      - studio_data:/data
+      - ./assets:/assets:ro
+    depends_on: [kokoro]
+
+volumes:
+  caddy_data:
+  caddy_config:
+  n8n_data:
+  studio_data:

@@ -1,0 +1,9 @@
+.env
+*.zip
+*.tgz
+__pycache__/
+assets/music/*
+!assets/music/README.txt
+.venv/
+kokoro/
+data/
