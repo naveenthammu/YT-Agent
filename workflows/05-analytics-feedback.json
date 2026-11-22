@@ -1,0 +1,388 @@
+{
+  "name": "YT-Agent 05 - Analytics Feedback",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "5059dad4-de0e-5e7e-beda-72e6179270f0",
+      "name": "Manual Metrics",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 8,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "803808f9-0ed2-59d7-93cf-d38c3a677794",
+      "name": "Daily Metrics",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT p.id::text AS publication_id, p.job_id::text AS job_id,\n       p.result->>'platform' AS platform,\n       p.result->>'external_id' AS external_id,\n       p.result->>'url' AS published_url,\n       j.plan->>'topic' AS topic,\n       j.config->>'youtubeChannelId' AS youtube_channel_id,\n       j.config->>'instagramUserId' AS instagram_user_id,\n       j.config->>'instagramApiVersion' AS instagram_api_version\nFROM yt_agent.publications p\nJOIN yt_agent.jobs j ON j.id = p.job_id\nWHERE p.status = 'published'\n  AND p.result->>'platform' IN ('youtube', 'instagram')\n  AND COALESCE(p.result->>'external_id', '') <> ''\nORDER BY p.updated_at DESC, p.id\nLIMIT 20;",
+        "options": {
+          "queryBatching": "single"
+        }
+      },
+      "id": "8b60e368-0e8b-579e-9d7f-458640f4421c",
+      "name": "Load Published Assets",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const row = $json;\nif (!row.job_id || !row.publication_id) throw new Error('Missing publication or job ID');\nif (!['youtube', 'instagram'].includes(row.platform)) throw new Error('Unsupported metrics platform');\nconst externalId = String(row.external_id ?? '');\nif (row.platform === 'youtube' && !/^[A-Za-z0-9_-]{11}$/.test(externalId)) throw new Error('Invalid YouTube video ID');\nif (row.platform === 'instagram' && !/^\\d{1,64}$/.test(externalId)) throw new Error('Invalid Instagram media ID');\nconst targetId = String(row.platform === 'youtube' ? row.youtube_channel_id ?? '' : row.instagram_user_id ?? '');\nif (!targetId) throw new Error('Missing frozen target account ID');\nconst apiVersion = String(row.instagram_api_version ?? '');\nif (row.platform === 'instagram' && !/^v\\d+\\.\\d+$/.test(apiVersion)) throw new Error('Invalid frozen Instagram API version');\nreturn {json: {...row, external_id: externalId, target_id: targetId, instagram_api_version: apiVersion}};"
+      },
+      "id": "2dcf95d9-1183-59b4-96a1-414c6b5ace48",
+      "name": "Prepare Metric Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5787bd5d-6617-5e2d-899d-6c60941b41c9",
+              "leftValue": "={{ $json.platform }}",
+              "rightValue": "youtube",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "fec99f82-db5f-5f2e-90ea-e0021521c044",
+      "name": "YouTube Metrics Route",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        740,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.googleapis.com/youtube/v3/videos",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "youTubeOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "part",
+              "value": "statistics,snippet"
+            },
+            {
+              "name": "id",
+              "value": "={{ $json.external_id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "fullResponse": false,
+              "neverError": false
+            }
+          }
+        }
+      },
+      "id": "d98d4e67-3567-5f22-8f62-b4750e97087f",
+      "name": "Read YouTube Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1000,
+        -100
+      ],
+      "credentials": {
+        "youTubeOAuth2Api": {
+          "id": "REPLACE_WITH_YOUTUBE_CREDENTIAL_ID",
+          "name": "YT-Agent YouTube"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://graph.instagram.com/' + $json.instagram_api_version + '/' + encodeURIComponent($json.external_id) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "fields",
+              "value": "id,like_count,comments_count,permalink,timestamp"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "fullResponse": false,
+              "neverError": false
+            }
+          }
+        }
+      },
+      "id": "48e4de68-df51-53ab-b3ef-2cee2ffd7071",
+      "name": "Read Instagram Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1000,
+        180
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_INSTAGRAM_CREDENTIAL_ID",
+          "name": "YT-Agent Instagram"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const context = $('Prepare Metric Request').item.json;\nconst media = ($json.items ?? []).find(item => String(item.id) === context.external_id);\nif (!media) throw new Error('Published YouTube video is missing or inaccessible');\nif (media.snippet?.channelId !== context.target_id) throw new Error('YouTube metric account does not match frozen target');\nconst stats = media.statistics ?? {};\nreturn {json: {job_id: context.job_id, metrics: {\n  publication_id: context.publication_id, platform: 'youtube', external_id: context.external_id,\n  account_id: context.target_id, topic: context.topic ?? null, observed_at: $now.toISO(),\n  views: stats.viewCount == null ? null : String(stats.viewCount),\n  likes: stats.likeCount == null ? null : String(stats.likeCount),\n  comments: stats.commentCount == null ? null : String(stats.commentCount),\n  url: context.published_url ?? null, source: 'youtube.videos.list'\n}}};"
+      },
+      "id": "7501cce7-c766-5cdb-8eb1-49806bded692",
+      "name": "Normalize YouTube Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1260,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const context = $('Prepare Metric Request').item.json;\nif (String($json.id ?? '') !== context.external_id) throw new Error('Instagram metric media ID does not match publication');\nreturn {json: {job_id: context.job_id, metrics: {\n  publication_id: context.publication_id, platform: 'instagram', external_id: context.external_id,\n  account_id: context.target_id, topic: context.topic ?? null, observed_at: $now.toISO(),\n  views: null, likes: $json.like_count == null ? null : String($json.like_count),\n  comments: $json.comments_count == null ? null : String($json.comments_count),\n  url: $json.permalink ?? context.published_url ?? null,\n  published_at: $json.timestamp ?? null, source: 'instagram.media'\n}}};"
+      },
+      "id": "b9ed4215-09ad-59ae-8a48-27e702e5263e",
+      "name": "Normalize Instagram Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1260,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "INSERT INTO yt_agent.audit (job_id, event, detail)\nVALUES ($1::uuid, 'metrics', $2::jsonb)\nRETURNING id, job_id, event, created_at;",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [$json.job_id, JSON.stringify($json.metrics)] }}"
+        }
+      },
+      "id": "7b96c54e-08c2-5cc1-ae70-0ff65b5ed0ef",
+      "name": "Save Metrics Audit",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1520,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    }
+  ],
+  "connections": {
+    "Manual Metrics": {
+      "main": [
+        [
+          {
+            "node": "Load Published Assets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Metrics": {
+      "main": [
+        [
+          {
+            "node": "Load Published Assets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Published Assets": {
+      "main": [
+        [
+          {
+            "node": "Prepare Metric Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Metric Request": {
+      "main": [
+        [
+          {
+            "node": "YouTube Metrics Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read YouTube Metrics": {
+      "main": [
+        [
+          {
+            "node": "Normalize YouTube Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Instagram Metrics": {
+      "main": [
+        [
+          {
+            "node": "Normalize Instagram Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize YouTube Metrics": {
+      "main": [
+        [
+          {
+            "node": "Save Metrics Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Instagram Metrics": {
+      "main": [
+        [
+          {
+            "node": "Save Metrics Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube Metrics Route": {
+      "main": [
+        [
+          {
+            "node": "Read YouTube Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read Instagram Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "executionTimeout": 1800,
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false
+  },
+  "pinData": {},
+  "tags": []
+}

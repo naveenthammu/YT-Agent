@@ -1,0 +1,1868 @@
+{
+  "name": "YT-Agent 04 - Render and Telegram Review",
+  "nodes": [
+    {
+      "id": "e07200f0-92ca-4bb3-b19a-c69af2eaae3d",
+      "name": "Run Render And Review",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "parameters": {},
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "id": "c5668b54-4b80-49a5-87b2-4b1bf2785186",
+      "name": "Render And Review Hourly",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 60
+            }
+          ]
+        }
+      },
+      "position": [
+        0,
+        180
+      ],
+      "notes": "Inactive on import. Hourly polling reduces idle n8n Cloud executions; finished media may wait up to an hour for review. Activate only after workflow 00, workflow 01 configuration, and all credentials are ready.",
+      "notesInFlow": true
+    },
+    {
+      "id": "c8df2f49-dff6-4016-ae43-54e2256227ed",
+      "name": "Expire Uncertain Work",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH stale_assets AS (\n UPDATE yt_agent.assets SET status='uncertain',error='Render submission interrupted; reconcile in Shotstack before retrying',updated_at=now()\n WHERE status='submitting' AND updated_at<now()-interval '20 minutes' RETURNING job_id\n), timed_out AS (\n UPDATE yt_agent.assets SET status='failed',error='Render exceeded its stored polling deadline; inspect the existing Shotstack render before regeneration',poll_lease_until=NULL,updated_at=now()\n WHERE status='rendering' AND COALESCE((render_checkpoint->>'poll_deadline')::timestamptz,created_at+interval '2 hours')<now() RETURNING job_id\n), stale_jobs AS (\n UPDATE yt_agent.jobs SET status='uncertain',error='An interrupted render or Telegram notification needs operator reconciliation',approval_token_hash=NULL,updated_at=now()\n WHERE id IN(SELECT job_id FROM stale_assets) OR (status='notifying' AND updated_at<now()-interval '30 minutes') RETURNING id\n), failed_jobs AS (\n UPDATE yt_agent.jobs j SET status='failed',error='One or more render assets failed; inspect asset.error before creating a new revision',updated_at=now()\n WHERE j.status IN('planned','rendering') AND (j.id IN(SELECT job_id FROM timed_out) OR EXISTS(SELECT 1 FROM yt_agent.assets a WHERE a.job_id=j.id AND a.revision=j.revision AND a.status='failed')) RETURNING id\n) SELECT 1 AS tick;",
+        "options": {
+          "queryReplacement": "={{ [] }}",
+          "queryBatching": "independently"
+        }
+      },
+      "position": [
+        260,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false
+    },
+    {
+      "id": "17bdd2aa-4b25-42dc-9d38-8e1333a78813",
+      "name": "Claim Render Work",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH candidate AS (\n SELECT a.id FROM yt_agent.assets a JOIN yt_agent.jobs j ON j.id=a.job_id AND j.revision=a.revision\n WHERE j.status IN('planned','rendering') AND a.status IN('planned','rendering') AND a.source_asset_id IS NULL\n AND (a.status='planned' OR a.render_id IS NOT NULL) AND a.poll_after<=now()\n AND (a.poll_lease_until IS NULL OR a.poll_lease_until<now())\n AND NOT EXISTS(SELECT 1 FROM yt_agent.assets busy WHERE busy.job_id=a.job_id AND busy.id<>a.id AND busy.poll_lease_until>now())\n ORDER BY a.poll_after,a.ordinal FOR UPDATE OF a,j SKIP LOCKED LIMIT 1\n) UPDATE yt_agent.assets a SET poll_lease_until=now()+interval '10 minutes',updated_at=now()\n FROM candidate WHERE a.id=candidate.id\n RETURNING a.*,(SELECT config FROM yt_agent.jobs WHERE id=a.job_id) AS config;",
+        "options": {
+          "queryReplacement": "={{ [] }}",
+          "queryBatching": "independently"
+        }
+      },
+      "position": [
+        520,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false
+    },
+    {
+      "id": "01d889e4-913c-4f71-a3fc-c9ff44d5689a",
+      "name": "Needs Render Submission",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "42d2f5f4-b6d9-459a-b90e-a0662e8e06c2",
+              "leftValue": "={{ $json.status === 'planned' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "position": [
+        760,
+        0
+      ]
+    },
+    {
+      "id": "aff02310-d4d4-46d7-812c-199bb8354037",
+      "name": "Build Original Edit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "\n const a=$input.first().json,c=a.config;\n if(c?.mediaGeneration!=='minimax_shared_v1')throw new Error('This planned job uses an old generation configuration. Create a new job with mediaGeneration=minimax_shared_v1 and a fresh shared video plan before rendering.');\n if(a.source_asset_id!=null||a.format!=='youtube_short'||c.reuseVideoAcrossPlatforms!==true)throw new Error('Only the canonical YouTube Short can generate the shared video; Instagram aliases cannot render');\n for(const key of ['maxRenderCreditsPerJob','maxRenderCreditsPerMonth'])if(typeof c[key]!=='number'||!Number.isFinite(c[key])||c[key]<=0)throw new Error('Set a positive finite '+key+' before rendering');\n if(!['stage','v1'].includes(c.shotstackStage)||c.shotstackRegion!=='au')throw new Error('Supported Shotstack stages are stage/v1 in region au');\n if(c.videoModel!=='minimax-h3-text-to-video'||c.videoResolution!=='768p')throw new Error('Use MiniMax Hailuo 3 text-to-video with 768p source video');\n if(typeof c.visualStyle!=='string'||!c.visualStyle.trim()||c.visualStyle.length>500)throw new Error('Set a nonempty visualStyle of at most 500 characters');\n if(!c.shotstackVoice||!String(c.shotstackVoice).trim()||!c.language)throw new Error('Choose shotstackVoice and language explicitly before voice generation');\n if(!Number.isInteger(c.maxScenes)||c.maxScenes<1||c.maxScenes>12||!Array.isArray(a.scenes)||!a.scenes.length||a.scenes.length>c.maxScenes)throw new Error('Invalid or excessive AI shot count (maximum twelve)');\n if(!Number.isInteger(a.duration_seconds)||a.duration_seconds<10||a.duration_seconds>60)throw new Error('Shared video duration must be 10..60 seconds');\n const scenes=a.scenes;\n for(const scene of scenes){\n   if(!Number.isInteger(scene.duration_seconds)||scene.duration_seconds<5||scene.duration_seconds>15)throw new Error('MiniMax shots require explicit integer duration_seconds of 5..15. Create a new job to replace legacy planned scenes.');\n   if(typeof scene.visual_prompt!=='string'||!scene.visual_prompt.trim()||scene.visual_prompt.length>1000)throw new Error('Each AI shot needs a nonempty visual_prompt of at most 1000 characters');\n   if(typeof scene.onscreen_text!=='string'||scene.onscreen_text.length>240||typeof scene.narration!=='string'||!scene.narration.trim())throw new Error('Optional captions must fit 240 characters; video narration must be nonempty');\n }\n if(scenes.reduce((total,scene)=>total+scene.duration_seconds,0)!==Number(a.duration_seconds))throw new Error('AI shot durations must exactly match the requested asset duration. Create a new job with a fresh shot plan.');\n const narration=scenes.map(scene=>scene.narration.trim()).join('\\n\\n');\n if(narration.length>4096||narration.split(/\\s+/).length>Math.ceil(a.duration_seconds*2.7))throw new Error('Narration exceeds the bounded character/word duration limit');\n const width=720,height=1280,seconds=a.duration_seconds;\n const speech={type:'audio',prompt:narration,model:'elevenlabs-multilingual-v2',options:{voice:String(c.shotstackVoice),language:String(c.language).split('-')[0].toLowerCase()}};\n const captionClips=[],visualClips=[],quote_requests=[];\n let elapsed=0;\n for(let i=0;i<scenes.length;i++){\n   const scene=scenes[i],length=scene.duration_seconds,timing={start:elapsed,length};\n   const visual={type:'video',prompt:scene.visual_prompt.trim()+'\\nVisual style: '+c.visualStyle.trim(),model:c.videoModel,volume:0,\n     options:{aspectRatio:'9:16',resolution:c.videoResolution,enhancePrompt:false}};\n   visualClips.push({asset:visual,...timing});\n   // Quote accepts generation fields only; volume belongs to the final VideoAsset.\n   const {volume,...generationAsset}=visual;\n   quote_requests.push({quote_id:'visual:'+i,kind:'video',quote_body:{asset:generationAsset,length}});\n   if(scene.onscreen_text.trim()){\n     const fontSize=Math.min(26,Math.max(16,Math.floor(Math.sqrt(width*.82*height*.12/(Math.max(1,Array.from(scene.onscreen_text).length)*1.5)))));\n     captionClips.push({asset:{type:'rich-text',text:scene.onscreen_text,font:{size:fontSize,weight:'700',color:'#FFFFFF'},align:{horizontal:'center',vertical:'middle'},style:{lineHeight:1.15}},...timing,width:Math.round(width*.82),height:Math.round(height*.13),position:'center',offset:{x:0,y:-0.36}});\n   }\n   elapsed+=length;\n }\n const tracks=[...(captionClips.length?[{clips:captionClips}]:[]),{clips:visualClips}];\n tracks.push({clips:[{alias:'voice',asset:speech,start:0,length:'auto'}]});\n quote_requests.push({quote_id:'voice:0',kind:'voice',quote_body:{asset:speech}});\n const edit={timeline:{background:'#000000',tracks},output:{format:'mp4',size:{width,height},quality:'medium',fps:24}};\n return [{json:{...a,has_voice:true,edit,quote_requests,voice_credits:0,render_estimate_credits:seconds/60,\n   cost_note:'One shared video: all MiniMax shots and voice quotes plus PAYG render estimate (1 credit/minute), with 25% margin. Estimate is not a provider billing cap.'}}];\n"
+      },
+      "position": [
+        1000,
+        -220
+      ],
+      "notes": "One canonical MiniMax video with muted generated audio, optional small captions and continuous selected ElevenLabs voice. Every generated component is quoted once before submission. Legacy planned jobs require a new shared-video plan.",
+      "notesInFlow": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "e48bd3ce-df8c-439b-bf9e-2acaf4ce381c",
+      "name": "Edit Passed Preflight",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "859a02a8-9519-4cc9-8698-be3187677e6c",
+              "leftValue": "={{ Boolean($json.edit) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "position": [
+        1120,
+        -220
+      ]
+    },
+    {
+      "id": "b201cec5-55bf-4dfb-b6c5-f7e44efefbee",
+      "name": "Record Render Preflight Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH changed AS (\n UPDATE yt_agent.assets SET status='failed',error=$2,poll_lease_until=NULL,updated_at=now()\n WHERE id=$1::uuid AND status='planned' RETURNING job_id\n) UPDATE yt_agent.jobs j SET status='failed',error=$2,updated_at=now() FROM changed c WHERE j.id=c.job_id RETURNING j.id;",
+        "options": {
+          "queryReplacement": "={{ [ $('Claim Render Work').first().json.id, String($json.error?.message || $json.error || 'Render preflight failed before paid generation').slice(0,1500) ] }}",
+          "queryBatching": "independently"
+        }
+      },
+      "position": [
+        1240,
+        -560
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false
+    },
+    {
+      "id": "6f3e7475-1018-44fd-a376-26bb00598997",
+      "name": "Prepare Generation Quotes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "\n const built=$input.first().json;\n if(!Array.isArray(built.quote_requests)||!built.quote_requests.length)throw new Error('No generation components were prepared; no paid render submitted');\n return built.quote_requests.map(request=>({json:{...request,shotstack_stage:built.config.shotstackStage},pairedItem:{item:0}}));\n"
+      },
+      "position": [
+        1240,
+        -220
+      ]
+    },
+    {
+      "id": "210080f3-ca15-43b9-985b-41277ec5fa2c",
+      "name": "Quote Every Generation Component",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.shotstack.io/edit/' + $json.shotstack_stage + '/generate/quote' }}",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.quote_body }}"
+      },
+      "position": [
+        1480,
+        -220
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "YT-Agent Shotstack"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "9051985f-eda0-4cdb-9d07-59b146235704",
+      "name": "Price All Generation And Render",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "\n const built=$('Build Original Edit').first().json,responses=$input.all(),expected=built.quote_requests;\n if(responses.length!==expected.length)throw new Error('Incomplete generation quote responses; no paid render submitted');\n const byId=new Map(expected.map(request=>[request.quote_id,request])),seen=new Set(),components=[];\n if(byId.size!==expected.length)throw new Error('Duplicate prepared generation quote IDs; no paid render submitted');\n let voice=0,video=0,image=0;\n for(let i=0;i<responses.length;i++){\n   // itemMatching follows n8n paired-item provenance, including reordered items.\n   const request=$('Prepare Generation Quotes').itemMatching(i).json,planned=byId.get(request.quote_id),quote=responses[i].json;\n   if(!planned||seen.has(request.quote_id)||JSON.stringify(request.quote_body)!==JSON.stringify(planned.quote_body)||request.kind!==planned.kind)throw new Error('Generation quote response pairing is missing or duplicated; no paid render submitted');\n   if(typeof quote.credits!=='number'||!Number.isFinite(quote.credits)||quote.credits<0||quote.ceiling!==false)throw new Error('Shotstack quote missing, invalid or only a ceiling; no paid render submitted');\n   seen.add(request.quote_id);\n   components.push({quote_id:request.quote_id,kind:request.kind,credits:quote.credits});\n   if(request.kind==='voice')voice+=quote.credits;else if(request.kind==='video')video+=quote.credits;else if(request.kind==='image')image+=quote.credits;else throw new Error('Unsupported generation quote kind');\n }\n const generation=voice+video+image,estimate=Math.ceil((generation+built.render_estimate_credits)*1.25*1000000)/1000000;\n if(!Number.isFinite(estimate)||estimate<=0)throw new Error('Invalid total generation/render estimate; no paid render submitted');\n return [{json:{...built,voice_credits:voice,reserved_credits:estimate,generation_quote_breakdown:{components,video_credits:video,image_credits:image,voice_credits:voice,generation_credits:generation,render_estimate_credits:built.render_estimate_credits,margin_percent:25}}}];\n"
+      },
+      "position": [
+        1720,
+        -220
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "d2ab9bb0-ad4c-4bb8-a13b-c97530f2c463",
+      "name": "All Quotes Are Valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "96dc7ae4-d8aa-44ad-b983-af112093e7c5",
+              "leftValue": "={{ Number.isFinite($json.reserved_credits) && Boolean($json.generation_quote_breakdown) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "position": [
+        1840,
+        -220
+      ]
+    },
+    {
+      "id": "54b2b1b9-acd5-474d-9018-7514de785076",
+      "name": "Reserve Render Credits",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH locked_asset AS MATERIALIZED (\n SELECT a.id,a.job_id,j.config,j.render_credits_reserved,\n CASE WHEN jsonb_typeof(j.config->'maxRenderCreditsPerJob')='number' THEN (j.config->>'maxRenderCreditsPerJob')::numeric END AS job_cap,\n CASE WHEN jsonb_typeof(j.config->'maxRenderCreditsPerMonth')='number' THEN (j.config->>'maxRenderCreditsPerMonth')::numeric END AS month_cap,\n 'generation:'||to_char(now() AT TIME ZONE 'Asia/Kolkata','YYYY-MM') AS budget_period\n FROM yt_agent.assets a JOIN yt_agent.jobs j ON j.id=a.job_id AND j.revision=a.revision\n WHERE a.id=$2::uuid AND a.job_id=$1::uuid AND a.status='planned' AND a.source_asset_id IS NULL\n AND j.status IN('planned','rendering') FOR UPDATE OF a,j\n), eligible AS MATERIALIZED (\n SELECT * FROM locked_asset WHERE config->>'mediaGeneration'='minimax_shared_v1'\n AND $3::numeric>0 AND $3::numeric NOT IN('NaN'::numeric,'Infinity'::numeric,'-Infinity'::numeric)\n AND job_cap>0 AND month_cap>0 AND render_credits_reserved>=0\n AND render_credits_reserved+$3::numeric<=job_cap AND $3::numeric<=month_cap\n), monthly_reservation AS (\n INSERT INTO yt_agent.credit_budgets(period,reserved_credits,updated_at)\n SELECT budget_period,$3::numeric,now() FROM eligible\n ON CONFLICT(period) DO UPDATE SET reserved_credits=yt_agent.credit_budgets.reserved_credits+EXCLUDED.reserved_credits,updated_at=now()\n WHERE yt_agent.credit_budgets.reserved_credits>=0\n AND yt_agent.credit_budgets.reserved_credits+EXCLUDED.reserved_credits<=(SELECT month_cap FROM eligible)\n RETURNING period\n), reservation AS (\n UPDATE yt_agent.jobs j SET render_credits_reserved=j.render_credits_reserved+$3::numeric,status='rendering',updated_at=now()\n FROM eligible e,monthly_reservation m WHERE j.id=e.job_id AND m.period=e.budget_period\n RETURNING j.id,j.config,m.period AS budget_period\n), changed AS (\n UPDATE yt_agent.assets a SET\n status='submitting',render_credits=$3::numeric,render_stage=j.config->>'shotstackStage',\n render_checkpoint=jsonb_build_object('reserved_credits',$3::numeric,'generation_budget_period',j.budget_period,'edit',$4::jsonb,'voice_quote_credits',$5::numeric,'cost_note',$6::text,'generation_quote_breakdown',$7::jsonb),\n error=NULL,updated_at=now()\n FROM reservation j WHERE a.id=$2::uuid AND a.job_id=j.id AND a.status='planned'\n RETURNING a.*\n), declined AS (\n UPDATE yt_agent.assets SET status='failed',error='Invalid shared-video budget or generation estimate exceeds the job/month credit allowance; no paid submission sent',poll_lease_until=NULL,updated_at=now()\n WHERE id=$2::uuid AND status='planned' AND EXISTS(SELECT 1 FROM locked_asset) AND NOT EXISTS(SELECT 1 FROM reservation)\n RETURNING *\n), failed_job AS (\n UPDATE yt_agent.jobs SET status='failed',error='Render credit reservation was declined',updated_at=now()\n WHERE id=$1::uuid AND EXISTS(SELECT 1 FROM declined) RETURNING id\n) SELECT * FROM changed UNION ALL SELECT * FROM declined;",
+        "options": {
+          "queryReplacement": "={{ [$json.job_id, $json.id, $json.reserved_credits, JSON.stringify($json.edit), $json.voice_credits, $json.cost_note, JSON.stringify($json.generation_quote_breakdown)] }}",
+          "queryBatching": "independently"
+        }
+      },
+      "position": [
+        1960,
+        -220
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false
+    },
+    {
+      "id": "7d443eaf-00e5-4409-857b-8e7acf48cd47",
+      "name": "Budget Reserved",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "44776bc5-a8b6-40be-9098-7708e0ca5624",
+              "leftValue": "={{ $json.status === 'submitting' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "position": [
+        2200,
+        -220
+      ]
+    },
+    {
+      "id": "51d855fc-16f9-40c7-8ee8-da5db0cd406f",
+      "name": "Submit Original Render",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.shotstack.io/edit/' + $json.render_stage + '/render' }}",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.render_checkpoint.edit }}"
+      },
+      "position": [
+        2440,
+        -220
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "YT-Agent Shotstack"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "0d4aebc9-fed2-4d74-ac28-881c65c9982a",
+      "name": "Classify Render Submission",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "\n const claim=$('Reserve Render Credits').first().json,response=$input.first().json;\n const id=response.response?.id;\n const accepted=response.success===true&&typeof id==='string'&&/^[a-f0-9-]{36}$/i.test(id);\n return [{json:{id:claim.id,job_id:claim.job_id,render_id:accepted?id:null,status:accepted?'rendering':'uncertain',error:accepted?null:'Render submission response missing or ambiguous. Reconcile with Shotstack before retrying; a charge may have occurred.'}}];\n"
+      },
+      "position": [
+        2680,
+        -220
+      ]
+    },
+    {
+      "id": "4b3dcce0-136b-4c4e-9f30-7fd3adf6b40f",
+      "name": "Save Render Submission",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH changed AS (\n UPDATE yt_agent.assets SET status=$3,render_id=$4,error=$5,poll_after=now()+interval '45 seconds',poll_lease_until=NULL,\n render_checkpoint=render_checkpoint||jsonb_build_object('submitted_at',now(),'poll_deadline',now()+interval '6 hours'),updated_at=now()\n WHERE id=$1::uuid AND job_id=$2::uuid AND status='submitting' RETURNING job_id,status\n) UPDATE yt_agent.jobs j SET status=CASE WHEN c.status='uncertain' THEN 'uncertain' ELSE 'rendering' END,error=CASE WHEN c.status='uncertain' THEN $5 ELSE NULL END,updated_at=now()\n FROM changed c WHERE j.id=c.job_id RETURNING j.id,j.status;",
+        "options": {
+          "queryReplacement": "={{ [$json.id,$json.job_id,$json.status,$json.render_id,$json.error] }}",
+          "queryBatching": "independently"
+        }
+      },
+      "position": [
+        2920,
+        -220
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false
+    },
+    {
+      "id": "de0dfd36-b00e-434a-a003-48671244bf17",
+      "name": "Poll Existing Render",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.shotstack.io/edit/' + $json.render_stage + '/render/' + encodeURIComponent($json.render_id) }}",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "position": [
+        1000,
+        160
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "YT-Agent Shotstack"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "id": "a0986ddf-81f2-4ea3-b31c-5d3a5d6dfd52",
+      "name": "Classify Render Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "\n const a=$('Claim Render Work').first().json,r=$input.first().json.response;\n const statuses=['queued','fetching','preprocessing','rendering','generating','saving','done','failed'];\n if(!r||r.id!==a.render_id||!statuses.includes(r.status))throw new Error('Unexpected Shotstack status response; keep the existing render ID');\n const failed=r.status==='failed';\n return [{json:{...a,done:r.status==='done',status:failed?'failed':'rendering',error:failed?String(r.error||'Shotstack render failed').slice(0,1500):null,render_status:r.status}}];\n"
+      },
+      "position": [
+        1240,
+        160
+      ]
+    },
+    {
+      "id": "9095e7c3-1adf-4930-b135-5c4d60621ed3",
+      "name": "Render Is Done",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e9c4aef9-3013-4dca-9b4d-c76e2a5b44cc",
+              "leftValue": "={{ $json.done }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "position": [
+        1480,
+        160
+      ]
+    },
+    {
+      "id": "d151e403-0150-4be2-86b0-bf85fb32bded",
+      "name": "Get Hosted Asset",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.shotstack.io/serve/' + $json.render_stage + '/assets/render/' + encodeURIComponent($json.render_id) }}",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "position": [
+        1720,
+        120
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "YT-Agent Shotstack"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "id": "51c3bc81-648d-4308-b421-f2fedf88e645",
+      "name": "Select Hosted Asset",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "\n const a=$('Claim Render Work').first().json,result=$input.first().json,ext=a.format==='instagram_image'?'jpg':'mp4';\n if(!Array.isArray(result.data))throw new Error('Unexpected Shotstack Serve response');\n const item=result.data.map(value=>value.attributes).find(value=>value&&value.renderId===a.render_id&&value.filename===a.render_id+'.'+ext&&value.status==='ready');\n if(!item)return [{json:{...a,hosted_ready:false,status:'rendering',error:null}}];\n // The n8n secure Code runner has no global URL. Match only the complete,\n // documented CDN shape; credentials, ports, escapes, query and fragment fail.\n const match=typeof item.url==='string'&&/^https:\\/\\/cdn\\.shotstack\\.io\\/au\\/(stage|v1)\\/([A-Za-z0-9_-]+)\\/([a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12})\\.(jpg|mp4)$/.exec(item.url);\n if(!match||match[1]!==a.render_stage||match[3]!==a.render_id||match[4]!==ext)throw new Error('Hosted media URL is not the expected immutable Shotstack render');\n return [{json:{...a,hosted_ready:true,media_url:item.url}}];\n"
+      },
+      "position": [
+        1960,
+        120
+      ]
+    },
+    {
+      "id": "dd732f80-6cd8-476f-b680-03e3aa29de15",
+      "name": "Hosted Asset Is Ready",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1d0c564d-db4a-4603-805e-103c288b7234",
+              "leftValue": "={{ $json.hosted_ready }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "position": [
+        2200,
+        120
+      ]
+    },
+    {
+      "id": "6c8ffefc-2fc9-466e-ad61-6ac4eb360eea",
+      "name": "Probe Rendered Media",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.shotstack.io/edit/' + $json.render_stage + '/probe/' + encodeURIComponent($json.media_url) }}",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "position": [
+        2440,
+        100
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "YT-Agent Shotstack"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "id": "eadae75b-cc92-4840-be6f-b47e003a6c78",
+      "name": "Validate Rendered Media",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "\n const a=$('Select Hosted Asset').first().json,response=$input.first().json,r=response.response||{};\n const streams=Array.isArray(r.streams)?r.streams:[],v=streams.find(s=>s.codec_type==='video'),audio=streams.find(s=>s.codec_type==='audio');\n const dimensions={youtube_long:[1280,720],youtube_short:[720,1280],instagram_reel:[720,1280],instagram_image:[1080,1350]};\n const image=a.format==='instagram_image',bytes=Number(r.format?.size),seconds=Number(r.format?.duration),[width,height]=dimensions[a.format];\n let error=null;\n if(response.success!==true||!v||v.width!==width||v.height!==height)error='Rendered dimensions do not match the requested format';\n else if(image?v.codec_name!=='mjpeg':v.codec_name!=='h264'||audio?.codec_name!=='aac')error='Rendered media must be JPEG or H264/AAC MP4';\n else if(!Number.isSafeInteger(bytes)||bytes<=0||bytes>(image?9000000:45000000))error=image?'Image exceeds the 9 MB review limit. Regenerate at lower quality.':'Video exceeds the 45 MB review limit. Regenerate with shorter duration or lower output quality; no approval issued.';\n else if(!image&&(!Number.isFinite(seconds)||seconds<Number(a.duration_seconds)-0.5||seconds>Number(a.duration_seconds)+0.5))error='Rendered video is truncated or exceeds the configured duration. Create a new job with a corrected narration/shot plan; no approval issued.';\n return [{json:{...a,valid:!error,status:error?'failed':'rendering',error,expected_bytes:bytes,actual_duration_seconds:image?0:seconds}}];\n"
+      },
+      "position": [
+        2680,
+        100
+      ]
+    },
+    {
+      "id": "25f09950-7146-43cf-a0d1-b2683c013051",
+      "name": "Media Metadata Is Valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "297a1770-8cc8-46f1-93ff-e7f5111244fb",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "position": [
+        2920,
+        100
+      ]
+    },
+    {
+      "id": "1d55bdab-bae7-453b-be2c-8f162a21bed3",
+      "name": "Download Verified Render",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.media_url }}",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "media"
+            }
+          }
+        }
+      },
+      "position": [
+        3160,
+        80
+      ],
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "id": "923ef589-09d2-465e-8fa9-1a1dbe6f79ba",
+      "name": "Hash Render Bytes",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "parameters": {
+        "action": "hash",
+        "type": "SHA256",
+        "binaryData": true,
+        "binaryPropertyName": "media",
+        "dataPropertyName": "sha256",
+        "encoding": "hex"
+      },
+      "position": [
+        3400,
+        80
+      ]
+    },
+    {
+      "id": "e459b3e2-b10c-4826-bbb4-971cdecc038b",
+      "name": "Restore Render Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return [{json:$input.first().json,binary:$('Download Verified Render').first().binary}];"
+      },
+      "position": [
+        3520,
+        80
+      ]
+    },
+    {
+      "id": "a8ab2d03-5d73-4caf-8fec-c7bd3e8519dc",
+      "name": "Inspect Downloaded Media",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "\n const item=$input.first(),a=$('Validate Rendered Media').first().json;\n const data=await this.helpers.getBinaryDataBuffer(0,'media');\n let error=null;\n if(!data.length||data.length!==a.expected_bytes||data.length>(a.format==='instagram_image'?9000000:45000000))error='Downloaded media size differs from its verified render metadata';\n if(!/^[a-f0-9]{64}$/i.test(item.json.sha256||''))error='SHA256 was not computed from the actual downloaded media';\n return [{json:{...a,sha256:item.json.sha256,bytes:data.length,valid:!error,status:error?'failed':'ready',error},binary:item.binary}];\n"
+      },
+      "position": [
+        3640,
+        80
+      ]
+    },
+    {
+      "id": "976cb0be-2f70-4be2-8d99-1b5402054573",
+      "name": "Downloaded Media Is Valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f8bce945-d7d4-423f-8a57-9a245e1c7f5d",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "position": [
+        3880,
+        80
+      ]
+    },
+    {
+      "id": "34947137-7cd7-4bff-a997-26e1ca446b78",
+      "name": "Save Ready Asset",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ready AS (\n UPDATE yt_agent.assets SET status='ready',media_url=$2,sha256=$3,bytes=$4::bigint,\n render_checkpoint=render_checkpoint||jsonb_build_object('actual_duration_seconds',$5::numeric),poll_lease_until=NULL,error=NULL,updated_at=now()\n WHERE id=$1::uuid AND status='rendering' AND source_asset_id IS NULL RETURNING *\n), shared AS (\n UPDATE yt_agent.assets a SET status='ready',media_url=m.media_url,sha256=m.sha256,bytes=m.bytes,\n render_id=m.render_id,render_stage=m.render_stage,render_checkpoint=jsonb_build_object('source_asset_id',m.id,'actual_duration_seconds',$5::numeric),\n poll_lease_until=NULL,error=NULL,updated_at=now()\n FROM ready m WHERE a.source_asset_id=m.id AND a.job_id=m.job_id AND a.revision=m.revision\n AND a.status='shared_waiting' AND a.format='instagram_reel' AND m.format='youtube_short' AND a.duration_seconds=m.duration_seconds\n RETURNING a.id\n) SELECT id,job_id,status FROM ready;",
+        "options": {
+          "queryReplacement": "={{ [$json.id,$json.media_url,$json.sha256,$json.bytes,$json.actual_duration_seconds] }}",
+          "queryBatching": "independently"
+        }
+      },
+      "position": [
+        4120,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false
+    },
+    {
+      "id": "87d03422-a36b-44f8-b12e-3380d0b56445",
+      "name": "Save Poll Outcome",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH changed AS (\n UPDATE yt_agent.assets SET status=$2,error=$3,poll_after=now()+interval '45 seconds',poll_lease_until=NULL,updated_at=now()\n WHERE id=$1::uuid AND status='rendering' RETURNING job_id,status\n) UPDATE yt_agent.jobs j SET status=CASE WHEN c.status='failed' THEN 'failed' ELSE j.status END,error=CASE WHEN c.status='failed' THEN $3 ELSE j.error END,updated_at=now()\n FROM changed c WHERE j.id=c.job_id RETURNING j.id,j.status;",
+        "options": {
+          "queryReplacement": "={{ [$json.id,$json.status,$json.error || null] }}",
+          "queryBatching": "independently"
+        }
+      },
+      "position": [
+        2680,
+        380
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false
+    },
+    {
+      "id": "559880b9-7b32-4227-98ef-f2956ba64ef4",
+      "name": "Claim Complete Review",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH candidate AS (\n SELECT j.id FROM yt_agent.jobs j WHERE j.status IN('planned','rendering')\n AND EXISTS(SELECT 1 FROM yt_agent.assets a WHERE a.job_id=j.id AND a.revision=j.revision)\n AND (j.config->>'mediaGeneration' IS DISTINCT FROM 'minimax_shared_v1' OR (\n   (SELECT count(*) FROM yt_agent.assets a WHERE a.job_id=j.id AND a.revision=j.revision)=2\n   AND (SELECT count(*) FROM yt_agent.assets a WHERE a.job_id=j.id AND a.revision=j.revision AND a.format='youtube_short' AND a.source_asset_id IS NULL)=1\n   AND (SELECT count(*) FROM yt_agent.assets a WHERE a.job_id=j.id AND a.revision=j.revision AND a.format='instagram_reel' AND a.source_asset_id IS NOT NULL)=1))\n AND NOT EXISTS(SELECT 1 FROM yt_agent.assets a WHERE a.job_id=j.id AND a.revision=j.revision\n   AND (a.status<>'ready' OR a.sha256 IS NULL OR a.bytes IS NULL OR a.media_url IS NULL))\n AND NOT EXISTS(SELECT 1 FROM yt_agent.assets a LEFT JOIN yt_agent.assets m ON m.id=a.source_asset_id\n   WHERE a.job_id=j.id AND a.revision=j.revision AND a.source_asset_id IS NOT NULL\n   AND (m.id IS NULL OR m.source_asset_id IS NOT NULL OR m.job_id<>a.job_id OR m.revision<>a.revision\n     OR m.status<>'ready' OR m.format<>'youtube_short' OR a.format<>'instagram_reel'\n     OR m.media_url IS DISTINCT FROM a.media_url OR m.sha256 IS DISTINCT FROM a.sha256 OR m.bytes IS DISTINCT FROM a.bytes))\n ORDER BY j.created_at FOR UPDATE SKIP LOCKED LIMIT 1\n), frozen AS (\n SELECT j.id,jsonb_build_object('job_id',j.id,'revision',j.revision,'publish_after',j.publish_after,'assets',(\n SELECT jsonb_agg(jsonb_build_object('id',a.id,'source_asset_id',a.source_asset_id,'format',a.format,'title',a.title,'caption',a.caption,'target_id',a.target_id,\n 'visibility',a.visibility,'made_for_kids',a.made_for_kids,'contains_synthetic_media',a.contains_synthetic_media,\n 'media_url',a.media_url,'sha256',a.sha256,'bytes',a.bytes) ORDER BY a.ordinal)\n FROM yt_agent.assets a WHERE a.job_id=j.id AND a.revision=j.revision)) AS manifest,gen_random_uuid()::text AS raw_token\n FROM yt_agent.jobs j JOIN candidate c ON c.id=j.id\n), updated AS (\n UPDATE yt_agent.jobs j SET status='notifying',manifest=f.manifest,manifest_hash=encode(digest(f.manifest::text,'sha256'),'hex'),\n approval_token_hash=encode(digest(f.raw_token,'sha256'),'hex'),approval_expires=now()+interval '24 hours',telegram_message_id=NULL,updated_at=now()\n FROM frozen f WHERE j.id=f.id RETURNING j.*\n) SELECT u.*,f.raw_token FROM updated u JOIN frozen f ON f.id=u.id;",
+        "options": {
+          "queryReplacement": "={{ [] }}",
+          "queryBatching": "independently"
+        }
+      },
+      "position": [
+        520,
+        760
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false
+    },
+    {
+      "id": "e11fc0db-0688-4f9d-94b0-58bde5cbb054",
+      "name": "Build Ordered Review Tasks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "\n const job=$input.first().json,assets=job.manifest?.assets;\n if(!Array.isArray(assets)||assets.length<1||assets.length>4)throw new Error('Review manifest must contain 1..4 assets');\n const byId=new Map(assets.map(asset=>[asset.id,asset]));\n if(byId.size!==assets.length)throw new Error('Review manifest has duplicate asset IDs');\n for(const asset of assets){\n   if(asset.source_asset_id!=null){\n     const master=byId.get(asset.source_asset_id);\n     if(!master||master.source_asset_id!=null||master.format!=='youtube_short'||asset.format!=='instagram_reel'||master.media_url!==asset.media_url||master.sha256!==asset.sha256||String(master.bytes)!==String(asset.bytes))throw new Error('Shared review media differs from its canonical source; no approval issued');\n   }\n }\n const tasks=[];\n const ordered=assets.filter(asset=>asset.source_asset_id==null).flatMap(master=>[master,...assets.filter(asset=>asset.source_asset_id===master.id)]);\n for(const asset of ordered){\n   if(!/^[a-f0-9]{64}$/i.test(asset.sha256)||!Number.isSafeInteger(Number(asset.bytes))||Number(asset.bytes)<=0||Number(asset.bytes)>(asset.format==='instagram_image'?9000000:45000000))throw new Error('Review requires bounded media and complete hashes');\n   const match=typeof asset.media_url==='string'&&/^https:\\/\\/cdn\\.shotstack\\.io\\/au\\/(stage|v1)\\/([A-Za-z0-9_-]+)\\/([a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12})\\.(jpg|mp4)$/.exec(asset.media_url);\n   if(!match||!['youtube_long','youtube_short','instagram_reel','instagram_image'].includes(asset.format)||match[4]!==(asset.format==='instagram_image'?'jpg':'mp4'))throw new Error('Review media must use the verified Shotstack CDN');\n   const context={...asset,job_id:job.id,revision:job.revision,telegram_chat_id:job.telegram_chat_id};\n   if(asset.source_asset_id==null)tasks.push({json:{...context,task:'media'}});\n   const text='Job '+job.id+' / revision '+job.revision+'\\nAsset '+asset.id+'\\nFormat: '+asset.format+'\\nDestination account: '+asset.target_id+'\\nVisibility: '+asset.visibility+'\\nMade for kids: '+asset.made_for_kids+'\\nSynthetic media: '+asset.contains_synthetic_media+'\\nTitle:\\n'+asset.title+'\\n\\nExact publishing caption:\\n'+asset.caption+'\\n\\nSHA256: '+asset.sha256+'\\nBytes: '+asset.bytes+'\\nPublication after: '+(job.manifest.publish_after||'approval')+'\\nEstimated job render/generation credits reserved: '+String(job.render_credits_reserved??'see database')+' (all AI video/image and voice quotes plus render estimate and 25% margin; not a billing cap).\\n';\n   // Escape rather than interpret arbitrary generated caption markup. Each chunk\n   // is bounded after entity expansion and renders as the exact plain text.\n   let chunk='';\n   for(const character of text){const escaped=character==='&'?'&amp;':character==='<'?'&lt;':character==='>'?'&gt;':character;if(chunk.length+escaped.length>3500){tasks.push({json:{...context,task:'metadata',text:chunk}});chunk='';}chunk+=escaped;}\n   if(chunk)tasks.push({json:{...context,task:'metadata',text:chunk}});\n }\n return tasks;\n"
+      },
+      "position": [
+        760,
+        760
+      ],
+      "notes": "Sends one shared video followed by complete escaped metadata for both destinations. Aliases must match their canonical file exactly. No approval token is sent until every media and metadata message succeeds.",
+      "notesInFlow": true
+    },
+    {
+      "id": "4c1e3e08-f05f-4fd4-8bd1-3b3788834b04",
+      "name": "Loop Review Tasks",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "position": [
+        1000,
+        760
+      ]
+    },
+    {
+      "id": "30180162-b2a7-4cb6-b297-289504625858",
+      "name": "Review Task Is Media",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "556412a6-2c85-4f54-9eab-457e9312c9df",
+              "leftValue": "={{ $json.task === 'media' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "position": [
+        1240,
+        760
+      ]
+    },
+    {
+      "id": "a4fe42f6-bf14-4d26-8f1a-2b67dc9da0d2",
+      "name": "Download Review File",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.media_url }}",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "media"
+            }
+          }
+        }
+      },
+      "position": [
+        1480,
+        640
+      ],
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "id": "6d5029d6-12cd-414c-afa4-f7db0aa26e85",
+      "name": "Hash Review File",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "parameters": {
+        "action": "hash",
+        "type": "SHA256",
+        "binaryData": true,
+        "binaryPropertyName": "media",
+        "dataPropertyName": "sha256",
+        "encoding": "hex"
+      },
+      "position": [
+        1720,
+        640
+      ]
+    },
+    {
+      "id": "dacdf4ee-c6ab-4a5d-86d8-7a43532b86cb",
+      "name": "Restore Review Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return [{json:$input.first().json,binary:$('Download Review File').item.binary}];"
+      },
+      "position": [
+        1840,
+        640
+      ]
+    },
+    {
+      "id": "09f9d2e6-8abd-4ccf-bd1e-863703e75bf2",
+      "name": "Verify Review File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "\n const item=$input.first(),task=$('Loop Review Tasks').item.json;\n const data=await this.helpers.getBinaryDataBuffer(0,'media');\n if(item.json.sha256!==task.sha256||data.length!==Number(task.bytes))throw new Error('Review media changed after the manifest was frozen; no approval buttons will be sent');\n item.binary.media.fileName=task.format+(task.format==='instagram_image'?'.jpg':'.mp4');\n return [{json:{...task},binary:item.binary}];\n"
+      },
+      "position": [
+        1960,
+        640
+      ]
+    },
+    {
+      "id": "2a7dba3a-aa21-4b82-9cf2-58fcc526fc15",
+      "name": "Review Is Image",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "fbe23309-d43b-4a76-a191-4783f0baa75d",
+              "leftValue": "={{ $json.format === 'instagram_image' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "position": [
+        2200,
+        640
+      ]
+    },
+    {
+      "id": "d0b9ea6d-e84e-401b-9ee0-159db1216f1f",
+      "name": "Send Finished Image",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "parameters": {
+        "resource": "message",
+        "operation": "sendPhoto",
+        "replyMarkup": "none",
+        "chatId": "={{ $json.telegram_chat_id }}",
+        "binaryData": true,
+        "binaryPropertyName": "media",
+        "additionalFields": {
+          "caption": "={{ 'Review file: ' + $json.format + ' / ' + $json.id }}"
+        }
+      },
+      "position": [
+        2440,
+        560
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "YT-Agent Telegram"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "id": "628ae7a8-cf0c-4b80-a147-fa1b07ad9297",
+      "name": "Send Finished Video",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "parameters": {
+        "resource": "message",
+        "operation": "sendVideo",
+        "replyMarkup": "none",
+        "chatId": "={{ $json.telegram_chat_id }}",
+        "binaryData": true,
+        "binaryPropertyName": "media",
+        "additionalFields": {
+          "caption": "={{ 'Review file: ' + $json.format + ' / ' + $json.id }}",
+          "supports_streaming": true
+        }
+      },
+      "position": [
+        2440,
+        740
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "YT-Agent Telegram"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "id": "40d4d9b5-19ac-4cd5-a484-96a666f743cf",
+      "name": "Record Media Preview",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH verified AS MATERIALIZED (\n SELECT a.* FROM yt_agent.assets a JOIN yt_agent.jobs j ON j.id=a.job_id AND j.revision=a.revision\n WHERE a.id=$1::uuid AND a.job_id=$6::uuid AND a.source_asset_id IS NULL AND a.status='ready' AND j.status='notifying'\n AND $2<>'' AND a.sha256=$3 AND a.media_url=$4 AND a.bytes=$5::bigint\n AND EXISTS(SELECT 1 FROM jsonb_array_elements(j.manifest->'assets') f WHERE f->>'id'=a.id::text\n   AND f->>'sha256'=$3 AND f->>'media_url'=$4 AND (f->>'bytes')::bigint=$5::bigint)\n FOR UPDATE OF a\n), previewed AS (\n UPDATE yt_agent.assets a SET preview_state='sent',preview_message_id=$2,updated_at=now()\n FROM verified m WHERE a.id=m.id OR (a.source_asset_id=m.id AND a.job_id=m.job_id AND a.revision=m.revision\n   AND a.status='ready' AND a.format='instagram_reel' AND m.format='youtube_short'\n   AND a.sha256=m.sha256 AND a.media_url=m.media_url AND a.bytes=m.bytes\n   AND EXISTS(SELECT 1 FROM yt_agent.jobs j,jsonb_array_elements(j.manifest->'assets') f\n     WHERE j.id=a.job_id AND f->>'id'=a.id::text AND f->>'source_asset_id'=m.id::text\n       AND f->>'sha256'=a.sha256 AND f->>'media_url'=a.media_url AND (f->>'bytes')::bigint=a.bytes))\n RETURNING a.id\n) SELECT * FROM previewed;",
+        "options": {
+          "queryReplacement": "={{ [ $('Verify Review File').item.json.id, String($json.message_id || $json.result?.message_id || ''), $('Verify Review File').item.json.sha256, $('Verify Review File').item.json.media_url, $('Verify Review File').item.json.bytes, $('Verify Review File').item.json.job_id ] }}",
+          "queryBatching": "independently"
+        }
+      },
+      "position": [
+        2680,
+        640
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false
+    },
+    {
+      "id": "464b8a38-bd27-44a5-b102-d9215a305e2e",
+      "name": "Send Exact Publishing Metadata",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "replyMarkup": "none",
+        "chatId": "={{ $json.telegram_chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "appendAttribution": false,
+          "disable_web_page_preview": true
+        }
+      },
+      "position": [
+        1720,
+        960
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "YT-Agent Telegram"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "id": "cc7125a9-299a-4016-acb7-960cff53712f",
+      "name": "Pause Between Review Messages",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 1,
+        "unit": "seconds"
+      },
+      "position": [
+        2920,
+        900
+      ],
+      "webhookId": "e0a3f14a-9789-4d90-b781-5de1bb825d37"
+    },
+    {
+      "id": "43ed643f-1c77-4624-ace5-1eaefd4f5aa9",
+      "name": "Prepare One Approval Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return [{json:$('Claim Complete Review').first().json}];"
+      },
+      "position": [
+        1120,
+        1180
+      ]
+    },
+    {
+      "id": "0fadacd4-474b-415b-9a1c-540ccc4e91f6",
+      "name": "Send Final Approval Buttons",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "replyMarkup": "inlineKeyboard",
+        "chatId": "={{ $('Claim Complete Review').first().json.telegram_chat_id }}",
+        "text": "={{ 'All files and exact publishing metadata for job ' + $('Claim Complete Review').first().json.id + ' (revision ' + $('Claim Complete Review').first().json.revision + ') are above. Review factual accuracy, media, title, captions, account and visibility. Approve all listed assets or reject this package. Buttons expire in 24 hours. Manifest SHA256: ' + $('Claim Complete Review').first().json.manifest_hash }}",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Approve all listed assets",
+                    "additionalFields": {
+                      "callback_data": "={{ 'a:' + $('Claim Complete Review').first().json.raw_token }}"
+                    }
+                  },
+                  {
+                    "text": "Reject package",
+                    "additionalFields": {
+                      "callback_data": "={{ 'r:' + $('Claim Complete Review').first().json.raw_token }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "appendAttribution": false,
+          "disable_web_page_preview": true
+        }
+      },
+      "position": [
+        1240,
+        1180
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "YT-Agent Telegram"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "id": "9df83408-e891-4076-a392-9c26e594d839",
+      "name": "Activate Stored Approval",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\n UPDATE yt_agent.jobs j SET status='awaiting_approval',telegram_message_id=$2,updated_at=now()\n WHERE j.id=$1::uuid AND j.status='notifying' AND j.manifest_hash=$3\n AND j.manifest_hash=encode(digest(j.manifest::text,'sha256'),'hex') AND j.approval_expires>now()\n AND $2<>'' AND NOT EXISTS(SELECT 1 FROM yt_agent.assets a WHERE a.job_id=j.id AND a.revision=j.revision AND a.preview_state<>'sent')\n RETURNING j.id,j.status,j.manifest_hash\n), audit AS (\n INSERT INTO yt_agent.audit(job_id,event,detail) SELECT id,'review_sent',jsonb_build_object('manifest_hash',manifest_hash) FROM updated\n) SELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $('Claim Complete Review').first().json.id, String($json.message_id || $json.result?.message_id || ''), $('Claim Complete Review').first().json.manifest_hash ] }}",
+          "queryBatching": "independently"
+        }
+      },
+      "position": [
+        1480,
+        1180
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false
+    },
+    {
+      "id": "eaa3b39c-b378-4316-bc2c-81ffe61b0539",
+      "name": "Read Before Activation",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "parameters": {
+        "content": "## 04 · Shared MiniMax video and review\nRequires workflow 00 schema and fresh minimax_shared_v1 planned jobs from 01.\n\nCredentials: YT-Agent Database, Shotstack (x-api-key), Telegram.\n\nOne MiniMax Hailuo 3 video + selected ElevenLabs narration is reused for YouTube Shorts and Instagram Reels. All shots and voice are quoted once; 25% margin and render cost reserve against job and calendar-month credits atomically before submission. Stage AI generation remains billable.\n\nHourly polling reduces idle executions. One finished file + exact metadata for both platforms precede one approval. No publishing here.\n\nInterrupted submissions retain their reservation; reconcile before retrying. Older submitted render IDs still poll. Older planned jobs require a new plan. Details: docs/n8n-setup.md.",
+        "height": 460,
+        "width": 440
+      },
+      "position": [
+        -500,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Run Render And Review": {
+      "main": [
+        [
+          {
+            "node": "Expire Uncertain Work",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render And Review Hourly": {
+      "main": [
+        [
+          {
+            "node": "Expire Uncertain Work",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expire Uncertain Work": {
+      "main": [
+        [
+          {
+            "node": "Claim Render Work",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Claim Complete Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Render Work": {
+      "main": [
+        [
+          {
+            "node": "Needs Render Submission",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Render Submission": {
+      "main": [
+        [
+          {
+            "node": "Build Original Edit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Poll Existing Render",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Original Edit": {
+      "main": [
+        [
+          {
+            "node": "Edit Passed Preflight",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Passed Preflight": {
+      "main": [
+        [
+          {
+            "node": "Prepare Generation Quotes",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Render Preflight Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Generation Quotes": {
+      "main": [
+        [
+          {
+            "node": "Quote Every Generation Component",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quote Every Generation Component": {
+      "main": [
+        [
+          {
+            "node": "Price All Generation And Render",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Price All Generation And Render": {
+      "main": [
+        [
+          {
+            "node": "All Quotes Are Valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All Quotes Are Valid": {
+      "main": [
+        [
+          {
+            "node": "Reserve Render Credits",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Render Preflight Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reserve Render Credits": {
+      "main": [
+        [
+          {
+            "node": "Budget Reserved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Budget Reserved": {
+      "main": [
+        [
+          {
+            "node": "Submit Original Render",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit Original Render": {
+      "main": [
+        [
+          {
+            "node": "Classify Render Submission",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Render Submission": {
+      "main": [
+        [
+          {
+            "node": "Save Render Submission",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Existing Render": {
+      "main": [
+        [
+          {
+            "node": "Classify Render Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Render Status": {
+      "main": [
+        [
+          {
+            "node": "Render Is Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render Is Done": {
+      "main": [
+        [
+          {
+            "node": "Get Hosted Asset",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Poll Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Hosted Asset": {
+      "main": [
+        [
+          {
+            "node": "Select Hosted Asset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Hosted Asset": {
+      "main": [
+        [
+          {
+            "node": "Hosted Asset Is Ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hosted Asset Is Ready": {
+      "main": [
+        [
+          {
+            "node": "Probe Rendered Media",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Poll Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Probe Rendered Media": {
+      "main": [
+        [
+          {
+            "node": "Validate Rendered Media",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Rendered Media": {
+      "main": [
+        [
+          {
+            "node": "Media Metadata Is Valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Media Metadata Is Valid": {
+      "main": [
+        [
+          {
+            "node": "Download Verified Render",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Poll Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Verified Render": {
+      "main": [
+        [
+          {
+            "node": "Hash Render Bytes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hash Render Bytes": {
+      "main": [
+        [
+          {
+            "node": "Restore Render Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Render Binary": {
+      "main": [
+        [
+          {
+            "node": "Inspect Downloaded Media",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inspect Downloaded Media": {
+      "main": [
+        [
+          {
+            "node": "Downloaded Media Is Valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Downloaded Media Is Valid": {
+      "main": [
+        [
+          {
+            "node": "Save Ready Asset",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Poll Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Complete Review": {
+      "main": [
+        [
+          {
+            "node": "Build Ordered Review Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Ordered Review Tasks": {
+      "main": [
+        [
+          {
+            "node": "Loop Review Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Review Tasks": {
+      "main": [
+        [
+          {
+            "node": "Prepare One Approval Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Review Task Is Media",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review Task Is Media": {
+      "main": [
+        [
+          {
+            "node": "Download Review File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Exact Publishing Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Review File": {
+      "main": [
+        [
+          {
+            "node": "Hash Review File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hash Review File": {
+      "main": [
+        [
+          {
+            "node": "Restore Review Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Review Binary": {
+      "main": [
+        [
+          {
+            "node": "Verify Review File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Review File": {
+      "main": [
+        [
+          {
+            "node": "Review Is Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review Is Image": {
+      "main": [
+        [
+          {
+            "node": "Send Finished Image",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Finished Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Finished Image": {
+      "main": [
+        [
+          {
+            "node": "Record Media Preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Finished Video": {
+      "main": [
+        [
+          {
+            "node": "Record Media Preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Media Preview": {
+      "main": [
+        [
+          {
+            "node": "Pause Between Review Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Exact Publishing Metadata": {
+      "main": [
+        [
+          {
+            "node": "Pause Between Review Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pause Between Review Messages": {
+      "main": [
+        [
+          {
+            "node": "Loop Review Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare One Approval Message": {
+      "main": [
+        [
+          {
+            "node": "Send Final Approval Buttons",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Final Approval Buttons": {
+      "main": [
+        [
+          {
+            "node": "Activate Stored Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "executionTimeout": 1800,
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false
+  },
+  "pinData": {},
+  "tags": []
+}

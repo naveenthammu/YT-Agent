@@ -1,0 +1,146 @@
+{
+  "name": "YT-Agent 02 - Telegram Approval",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "callback_query"
+        ],
+        "additionalFields": {}
+      },
+      "id": "943f7a2e-2fd9-5b69-965e-6159c2e7444b",
+      "name": "Telegram Approval Callback",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_TELEGRAM_CREDENTIAL_ID",
+          "name": "YT-Agent Telegram"
+        }
+      },
+      "webhookId": "704d099d-b45e-584d-8912-c2edd26c08b6"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Telegram Trigger emits the complete, secret-header-verified update.\n// Authorization comes from the job's frozen approver IDs and chat in PostgreSQL.\nconst update = $input.first().json;\nconst callback = update.callback_query;\nif (!callback || typeof callback.id !== 'string' || !callback.id) {\n  throw new Error('Expected a full Telegram callback_query update');\n}\nfunction numericId(value, label) {\n  if (typeof value === 'number' && !Number.isSafeInteger(value)) throw new Error(label + ' is not a safe integer');\n  const id = String(value ?? '');\n  if (!/^-?\\d+$/.test(id)) throw new Error('Missing or invalid ' + label);\n  return id;\n}\nconst chatId = numericId(callback.message?.chat?.id, 'chat ID');\nconst userId = numericId(callback.from?.id, 'sender ID');\nconst messageId = numericId(callback.message?.message_id, 'message ID');\nconst match = /^([ar]):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(String(callback.data ?? ''));\nif (!match) throw new Error('Expected an approval or rejection button with a UUID token');\nreturn [{json: {update, callbackId: callback.id, action: match[1], token: match[2], chatId, userId, messageId}}];"
+      },
+      "id": "dc2f6c14-4f0c-5432-abb4-3a8513087d9f",
+      "name": "Validate Approval Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        0
+      ],
+      "notes": "Full update retained. Authorization is checked atomically against the stored job, never a username or message text.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "WITH decision AS (\n  UPDATE yt_agent.jobs AS j\n  SET status = CASE WHEN $2::text = 'a' THEN 'approved' ELSE 'rejected' END,\n      approved_hash = CASE WHEN $2::text = 'a' THEN j.manifest_hash ELSE NULL END,\n      approval_token_hash = NULL,\n      approved_by = $4::text,\n      approved_at = now(),\n      updated_at = now()\n  WHERE $2::text IN ('a', 'r')\n    AND j.status = 'awaiting_approval'\n    AND j.approval_token_hash = encode(digest($1::text, 'sha256'), 'hex')\n    AND j.approval_expires > now()\n    AND j.telegram_chat_id = $3::text\n    AND j.approver_ids @> jsonb_build_array($4::text)\n    AND j.telegram_message_id = $5::text\n    AND j.manifest IS NOT NULL\n    AND j.manifest_hash = encode(digest(j.manifest::text, 'sha256'), 'hex')\n    AND j.manifest->>'job_id' = j.id::text\n    AND (j.manifest->>'revision')::integer = j.revision\n    AND jsonb_typeof(j.manifest->'assets') = 'array'\n    AND jsonb_array_length(j.manifest->'assets') > 0\n  RETURNING j.id, j.revision, j.status, j.manifest, j.manifest_hash\n), queued AS (\n  INSERT INTO yt_agent.publications (asset_id, job_id, status)\n  SELECT (asset->>'id')::uuid, d.id, 'pending'\n  FROM decision d\n  CROSS JOIN LATERAL jsonb_array_elements(d.manifest->'assets') asset\n  WHERE d.status = 'approved'\n  ON CONFLICT (asset_id) DO NOTHING\n  RETURNING id\n), audited AS (\n  INSERT INTO yt_agent.audit (job_id, event, detail)\n  SELECT d.id,\n         CASE WHEN d.status = 'approved' THEN 'approved' ELSE 'rejected' END,\n         jsonb_build_object('actor_id', $4::text, 'chat_id', $3::text,\n                           'message_id', $5::text, 'callback_query_id', $6::text,\n                           'revision', d.revision, 'manifest_hash', d.manifest_hash)\n  FROM decision d\n  RETURNING id\n)\nSELECT EXISTS (SELECT 1 FROM decision) AS changed,\n       COALESCE((SELECT id::text FROM decision), '') AS job_id,\n       COALESCE((SELECT status FROM decision), 'unchanged') AS status,\n       (SELECT count(*) FROM queued) AS publications_queued,\n       (SELECT count(*) FROM audited) AS audit_events,\n       CASE\n         WHEN EXISTS (SELECT 1 FROM decision WHERE status = 'approved')\n           THEN 'Approved. The exact reviewed assets are queued for the publisher.'\n         WHEN EXISTS (SELECT 1 FROM decision WHERE status = 'rejected')\n           THEN 'Rejected. No assets from this review will be published.'\n         ELSE 'No change: this button is handled, expired, unauthorized, or the review changed.'\n       END AS answer_text;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "={{ [$json.token, $json.action, $json.chatId, $json.userId, $json.messageId, $json.callbackId] }}"
+        }
+      },
+      "id": "ef2e8d42-2a91-5f6f-a3cc-6f185a483b98",
+      "name": "Apply Approval Atomically",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        580,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "parameters": {
+        "resource": "callback",
+        "operation": "answerQuery",
+        "queryId": "={{ $('Validate Approval Callback').first().json.callbackId }}",
+        "additionalFields": {
+          "text": "={{ $json.answer_text }}",
+          "show_alert": true,
+          "cache_time": 0
+        }
+      },
+      "id": "8cd3163c-9c76-5369-b653-9eaacd1de41d",
+      "name": "Answer Approval Callback",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        900,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_TELEGRAM_CREDENTIAL_ID",
+          "name": "YT-Agent Telegram"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    }
+  ],
+  "connections": {
+    "Telegram Approval Callback": {
+      "main": [
+        [
+          {
+            "node": "Validate Approval Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Approval Callback": {
+      "main": [
+        [
+          {
+            "node": "Apply Approval Atomically",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Approval Atomically": {
+      "main": [
+        [
+          {
+            "node": "Answer Approval Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "executionTimeout": 120,
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false
+  },
+  "pinData": {},
+  "tags": []
+}

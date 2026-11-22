@@ -1,0 +1,1705 @@
+{
+  "name": "YT-Agent 03 - Publish Approved Media (Standalone)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "e930b5c7-03ab-4d11-9000-000000000001",
+      "name": "Manual Publisher",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 60
+            }
+          ]
+        }
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000002",
+      "name": "Publisher Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        180
+      ],
+      "notes": "Hourly polling limits idle executions. One approved destination per run; same shared file is published separately to both accounts. Run manually after approval for faster posting."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const config = {\n  publishingEnabled: false,\n  allowedMediaHosts: [], // Add exact HTTPS CDN hostnames returned by your render account.\n  maxMediaBytes: 100 * 1024 * 1024\n};\nif (!config.publishingEnabled) return [];\nif (!Array.isArray(config.allowedMediaHosts) || !config.allowedMediaHosts.length ||\n    config.allowedMediaHosts.some(h => typeof h !== 'string' || !/^[a-z0-9.-]+$/.test(h) || h.includes('*'))) {\n  throw new Error('Set exact allowedMediaHosts before enabling publication');\n}\nif (!Number.isSafeInteger(config.maxMediaBytes) || config.maxMediaBytes < 1) throw new Error('Invalid media size limit');\nreturn [{json:config}];"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000003",
+      "name": "Publisher Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH candidate AS (\n  SELECT p.id, p.asset_id, p.job_id, j.config, j.manifest\n  FROM yt_agent.publications p\n  JOIN yt_agent.jobs j ON j.id=p.job_id\n  JOIN yt_agent.assets a ON a.id=p.asset_id AND a.job_id=j.id AND a.revision=j.revision\n  WHERE p.status='pending' AND p.checkpoint='{}'::jsonb\n    AND a.status='ready' AND j.status IN ('approved','partial')\n    AND j.approved_hash=j.manifest_hash\n    AND encode(digest(j.manifest::text,'sha256'),'hex')=j.approved_hash\n    AND (j.manifest->>'revision')::integer=j.revision\n    AND j.manifest->>'job_id'=j.id::text\n    AND (j.manifest->>'publish_after' IS NULL OR (j.manifest->>'publish_after')::timestamptz<=now())\n    AND NOT EXISTS (SELECT 1 FROM yt_agent.publications blocked WHERE blocked.job_id=j.id AND blocked.status IN ('uncertain','publishing'))\n    AND EXISTS (SELECT 1 FROM jsonb_array_elements(j.manifest->'assets') frozen WHERE frozen->>'id'=a.id::text)\n  ORDER BY j.created_at,p.id\n  FOR UPDATE OF p,j SKIP LOCKED LIMIT 1\n), claimed AS (\n  UPDATE yt_agent.publications p SET status='publishing',started_at=now(),updated_at=now(),\n    checkpoint='{\"stage\":\"claimed\"}'::jsonb\n  FROM candidate c WHERE p.id=c.id RETURNING p.id\n), mark_job AS (\n  UPDATE yt_agent.jobs j SET status='publishing',updated_at=now()\n  FROM candidate c,claimed p WHERE j.id=c.job_id AND p.id=c.id RETURNING j.id\n)\nSELECT c.id::text AS publication_id,c.job_id::text,c.asset_id::text,c.config,frozen AS asset\nFROM candidate c JOIN claimed p ON p.id=c.id\nCROSS JOIN LATERAL jsonb_array_elements(c.manifest->'assets') frozen\nWHERE frozen->>'id'=c.asset_id::text;",
+        "options": {
+          "queryReplacement": "={{ [] }}",
+          "queryBatching": "single"
+        }
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000004",
+      "name": "Claim One Approved Publication",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        490,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YT_AGENT_DATABASE_CREDENTIAL_ID",
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const row=$input.first().json, owner=$('Publisher Config').first().json;\nconst a=row.asset, c=row.config;\nif (!a || !c || a.id!==row.asset_id || !/^[a-f0-9]{64}$/i.test(a.sha256||'')) throw new Error('Missing immutable approved asset');\nif (!['youtube_long','youtube_short','instagram_reel','instagram_image'].includes(a.format)) throw new Error('Unsupported approved format');\nconst isYouTube=a.format.startsWith('youtube_');\nif (typeof a.target_id!=='string' || !a.target_id || a.target_id!==(isYouTube?c.youtubeChannelId:c.instagramUserId)) throw new Error('Frozen target does not match configured account');\nif (typeof a.made_for_kids!=='boolean' || typeof a.contains_synthetic_media!=='boolean') throw new Error('Explicit audience and synthetic disclosure required');\nif (typeof a.title!=='string' || !a.title.trim() || (isYouTube && a.title.length>100) || typeof a.caption!=='string') throw new Error('Invalid approved metadata');\nif ((isYouTube && !['public','private','unlisted'].includes(a.visibility)) || (!isYouTube && a.visibility!=='public')) throw new Error('Invalid approved visibility');\nif (isYouTube ? Buffer.byteLength(a.caption,'utf8')>5000 : a.caption.length>2200) throw new Error('Caption exceeds provider limit');\nif (!isYouTube && (!/^\\d+$/.test(c.instagramUserId)||!/^v\\d+\\.\\d+$/.test(c.instagramApiVersion))) throw new Error('Pinned Instagram version and numeric account ID required');\nconst size=Number(a.bytes);\nif (!Number.isSafeInteger(size)||size<=0||size>owner.maxMediaBytes) throw new Error('Approved media exceeds configured download limit');\nconst match=/^https:\\/\\/([a-zA-Z0-9.-]+)(\\/[^#]*)$/.exec(a.media_url||'');\nif (!match || !owner.allowedMediaHosts.includes(match[1].toLowerCase())) throw new Error('Media URL is outside approved HTTPS render hosts');\nreturn [{json:{...row,asset:{...a,bytes:size},platform:isYouTube?'youtube':'instagram'}}];"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000005",
+      "name": "Validate Approved Asset",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        740,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.asset.media_url }}",
+        "authentication": "none",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data",
+              "neverError": false,
+              "fullResponse": false
+            }
+          }
+        }
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000006",
+      "name": "Download Approved Media",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        990,
+        0
+      ],
+      "retryOnFail": false,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "action": "hash",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "type": "SHA256",
+        "dataPropertyName": "actual_sha256",
+        "encoding": "hex"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000007",
+      "name": "Hash Downloaded Media",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const input=$input.first(), row=$('Validate Approved Asset').first().json;\nconst data=await this.helpers.getBinaryDataBuffer(0,'data');\nif (input.json.actual_sha256!==row.asset.sha256 || data.length!==row.asset.bytes) throw new Error('Media changed after approval; regenerate and approve a new revision');\nreturn [{json:row,binary:input.binary}];"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000008",
+      "name": "Verify Exact Media",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1490,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "condition-8",
+              "leftValue": "={{ $json.platform === 'youtube' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000009",
+      "name": "YouTube Asset",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1740,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.googleapis.com/youtube/v3/channels",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "youTubeOAuth2Api",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "neverError": false,
+              "fullResponse": false
+            }
+          }
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "part",
+              "value": "id"
+            },
+            {
+              "name": "mine",
+              "value": "true"
+            },
+            {
+              "name": "maxResults",
+              "value": "50"
+            }
+          ]
+        }
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000010",
+      "name": "Read YouTube Channel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1990,
+        -400
+      ],
+      "retryOnFail": false,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "youTubeOAuth2Api": {
+          "id": "REPLACE_WITH_YT_AGENT_YOUTUBE_CREDENTIAL_ID",
+          "name": "YT-Agent YouTube"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const row=$('Verify Exact Media').first().json, items=$input.first().json.items;\nif (!Array.isArray(items)||items.length!==1||items[0].id!==row.asset.target_id||items[0].id!==row.config.youtubeChannelId) throw new Error('OAuth channel does not uniquely match the approved YouTube target');\nreturn [{json:row}];"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000011",
+      "name": "Verify YouTube Channel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        -400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/upload/youtube/v3/videos",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "youTubeOAuth2Api",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "data",
+              "fullResponse": true,
+              "neverError": false
+            }
+          }
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "uploadType",
+              "value": "resumable"
+            },
+            {
+              "name": "part",
+              "value": "snippet,status"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Upload-Content-Length",
+              "value": "={{ String($json.asset.bytes) }}"
+            },
+            {
+              "name": "X-Upload-Content-Type",
+              "value": "video/mp4"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ {snippet:{title:$json.asset.title,description:$json.asset.caption},status:{privacyStatus:$json.asset.visibility,selfDeclaredMadeForKids:$json.asset.made_for_kids,containsSyntheticMedia:$json.asset.contains_synthetic_media}} }}"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000012",
+      "name": "Start YouTube Resumable Session",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2490,
+        -400
+      ],
+      "retryOnFail": false,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "youTubeOAuth2Api": {
+          "id": "REPLACE_WITH_YT_AGENT_YOUTUBE_CREDENTIAL_ID",
+          "name": "YT-Agent YouTube"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const response=$input.first().json, row=$('Verify Exact Media').first().json;\nconst location=response.headers?.location||response.headers?.Location;\nif (typeof location!=='string'||!/^https:\\/\\/www\\.googleapis\\.com\\/upload\\/youtube\\/v3\\/videos\\?[^#\\s]+$/.test(location)) throw new Error('Missing or untrusted resumable upload location');\nreturn [{json:{...row,checkpoint:{stage:'uploading',upload_url:location,total_bytes:row.asset.bytes}}}];"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000013",
+      "name": "Validate YouTube Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2740,
+        -400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE yt_agent.publications SET checkpoint=$2::jsonb,updated_at=now() WHERE id=$1::uuid AND status='publishing' RETURNING id::text AS publication_id,checkpoint;",
+        "options": {
+          "queryReplacement": "={{ [$('Claim One Approved Publication').first().json.publication_id,JSON.stringify($json.checkpoint)] }}",
+          "queryBatching": "single"
+        }
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000014",
+      "name": "Save YouTube Session",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2990,
+        -400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YT_AGENT_DATABASE_CREDENTIAL_ID",
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return [{json:$('Validate YouTube Session').first().json,binary:$('Verify Exact Media').first().binary}];"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000015",
+      "name": "Restore Verified YouTube Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3240,
+        -400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $json.checkpoint.upload_url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "youTubeOAuth2Api",
+        "options": {
+          "timeout": 600000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "fullResponse": false,
+              "neverError": false
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "video/mp4"
+            },
+            {
+              "name": "Content-Length",
+              "value": "={{ String($json.asset.bytes) }}"
+            },
+            {
+              "name": "Content-Range",
+              "value": "={{ 'bytes 0-'+($json.asset.bytes-1)+'/'+$json.asset.bytes }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000016",
+      "name": "Upload YouTube Bytes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3490,
+        -400
+      ],
+      "retryOnFail": false,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "youTubeOAuth2Api": {
+          "id": "REPLACE_WITH_YT_AGENT_YOUTUBE_CREDENTIAL_ID",
+          "name": "YT-Agent YouTube"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const id=$input.first().json.id;\nif (typeof id!=='string'||!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error('Upload response lacks a video ID; inspect saved resumable session');\nreturn [{json:{result:{platform:'youtube',external_id:id,url:'https://www.youtube.com/watch?v='+id}}}];"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000017",
+      "name": "YouTube Published Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3740,
+        -400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://graph.instagram.com/'+$('Verify Exact Media').first().json.config.instagramApiVersion+'/me' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "neverError": false,
+              "fullResponse": false
+            }
+          }
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "fields",
+              "value": "user_id,username,account_type"
+            }
+          ]
+        }
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000018",
+      "name": "Read Instagram Account",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1990,
+        400
+      ],
+      "retryOnFail": false,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YT_AGENT_INSTAGRAM_CREDENTIAL_ID",
+          "name": "YT-Agent Instagram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const row=$('Verify Exact Media').first().json, body=$input.first().json;\nconst rows=body.data??[body];\nif (!Array.isArray(rows)||rows.length!==1||String(rows[0].user_id)!==row.asset.target_id||String(rows[0].user_id)!==row.config.instagramUserId||!['BUSINESS','MEDIA_CREATOR'].includes(String(rows[0].account_type).toUpperCase())) throw new Error('Instagram token does not identify the approved professional account');\nreturn [{json:row}];"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000019",
+      "name": "Verify Instagram Account",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://graph.instagram.com/'+$json.config.instagramApiVersion+'/'+$json.asset.target_id+'/media' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "neverError": false,
+              "fullResponse": false
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.asset.format==='instagram_image' ? {image_url:$json.asset.media_url,caption:$json.asset.caption,is_ai_generated:$json.asset.contains_synthetic_media} : {media_type:'REELS',video_url:$json.asset.media_url,caption:$json.asset.caption,is_ai_generated:$json.asset.contains_synthetic_media} }}"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000020",
+      "name": "Create Instagram Container",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2490,
+        400
+      ],
+      "retryOnFail": false,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YT_AGENT_INSTAGRAM_CREDENTIAL_ID",
+          "name": "YT-Agent Instagram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const id=$input.first().json.id, row=$('Verify Exact Media').first().json;\nif (typeof id!=='string'||!/^\\d+$/.test(id)) throw new Error('Instagram container creation returned no valid ID');\nreturn [{json:{...row,container_id:id,checkpoint:{stage:'container',container_id:id}}}];"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000021",
+      "name": "Validate Instagram Container",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2740,
+        400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE yt_agent.publications SET checkpoint=$2::jsonb,updated_at=now() WHERE id=$1::uuid AND status='publishing' RETURNING id::text AS publication_id,checkpoint;",
+        "options": {
+          "queryReplacement": "={{ [$('Claim One Approved Publication').first().json.publication_id,JSON.stringify($json.checkpoint)] }}",
+          "queryBatching": "single"
+        }
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000022",
+      "name": "Save Instagram Container",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2990,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YT_AGENT_DATABASE_CREDENTIAL_ID",
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://graph.instagram.com/'+$('Verify Exact Media').first().json.config.instagramApiVersion+'/'+$('Validate Instagram Container').first().json.container_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "neverError": false,
+              "fullResponse": false
+            }
+          }
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "fields",
+              "value": "status_code"
+            }
+          ]
+        }
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000023",
+      "name": "Read Instagram Container",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3240,
+        400
+      ],
+      "retryOnFail": false,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YT_AGENT_INSTAGRAM_CREDENTIAL_ID",
+          "name": "YT-Agent Instagram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const status=$input.first().json.status_code, attempt=$runIndex+1;\nlet poll_state='uncertain';\nif (status==='FINISHED') poll_state='ready';\nelse if (status==='IN_PROGRESS') poll_state=attempt<5?'wait':'failed';\nelse if (['ERROR','EXPIRED'].includes(status)) poll_state='failed';\nreturn [{json:{...$('Validate Instagram Container').first().json,poll_state,poll_attempt:attempt,container_status:status}}];"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000024",
+      "name": "Classify Instagram Container",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3490,
+        400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "condition-24",
+              "leftValue": "={{ $json.poll_state === 'ready' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000025",
+      "name": "Instagram Ready",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3740,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "condition-25",
+              "leftValue": "={{ $json.poll_state === 'wait' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000026",
+      "name": "Instagram Needs Wait",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3740,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 60,
+        "unit": "seconds"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000027",
+      "name": "Wait Before Instagram Poll",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3490,
+        950
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "condition-27",
+              "leftValue": "={{ $json.poll_state === 'uncertain' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000028",
+      "name": "Instagram Outcome Uncertain",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3990,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE yt_agent.publications SET checkpoint=$2::jsonb,updated_at=now() WHERE id=$1::uuid AND status='publishing' RETURNING id::text AS publication_id,checkpoint;",
+        "options": {
+          "queryReplacement": "={{ [$('Claim One Approved Publication').first().json.publication_id,JSON.stringify({stage:'publishing',container_id:$('Validate Instagram Container').first().json.container_id,publish_attempted:true})] }}",
+          "queryBatching": "single"
+        }
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000029",
+      "name": "Save Instagram Publish Intent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3990,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YT_AGENT_DATABASE_CREDENTIAL_ID",
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://graph.instagram.com/'+$('Verify Exact Media').first().json.config.instagramApiVersion+'/'+$('Verify Exact Media').first().json.asset.target_id+'/media_publish' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "neverError": false,
+              "fullResponse": false
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ {creation_id:$('Validate Instagram Container').first().json.container_id} }}"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000030",
+      "name": "Publish Instagram Container",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4240,
+        400
+      ],
+      "retryOnFail": false,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YT_AGENT_INSTAGRAM_CREDENTIAL_ID",
+          "name": "YT-Agent Instagram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const id=$input.first().json.id;\nif (typeof id!=='string'||!/^\\d+$/.test(id)) throw new Error('Instagram publication ID unknown; never resubmit media_publish');\nreturn [{json:{checkpoint:{stage:'published_id',publish_attempted:true,container_id:$('Validate Instagram Container').first().json.container_id,media_id:id}}}];"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000031",
+      "name": "Validate Instagram Media ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4490,
+        400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE yt_agent.publications SET checkpoint=$2::jsonb,updated_at=now() WHERE id=$1::uuid AND status='publishing' RETURNING id::text AS publication_id,checkpoint;",
+        "options": {
+          "queryReplacement": "={{ [$('Claim One Approved Publication').first().json.publication_id,JSON.stringify($json.checkpoint)] }}",
+          "queryBatching": "single"
+        }
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000032",
+      "name": "Save Instagram Media ID",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        4740,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YT_AGENT_DATABASE_CREDENTIAL_ID",
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://graph.instagram.com/'+$('Verify Exact Media').first().json.config.instagramApiVersion+'/'+$('Validate Instagram Media ID').first().json.checkpoint.media_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "neverError": false,
+              "fullResponse": false
+            }
+          }
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "fields",
+              "value": "id,permalink"
+            }
+          ]
+        }
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000033",
+      "name": "Read Instagram Permalink",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4990,
+        400
+      ],
+      "retryOnFail": false,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YT_AGENT_INSTAGRAM_CREDENTIAL_ID",
+          "name": "YT-Agent Instagram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const response=$input.first().json, id=$('Validate Instagram Media ID').first().json.checkpoint.media_id;\nif (response.id!==id||typeof response.permalink!=='string'||!/^https:\\/\\/(?:www\\.)?instagram\\.com\\/(?:p|reel|tv)\\/[A-Za-z0-9_-]+\\/?(?:\\?[^#]*)?$/.test(response.permalink)) throw new Error('Media ID saved but permalink unavailable; reconcile without republishing');\nreturn [{json:{result:{platform:'instagram',external_id:id,url:response.permalink}}}];"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000034",
+      "name": "Instagram Published Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5240,
+        400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH saved AS (\n UPDATE yt_agent.publications SET status='published',result=$2::jsonb,\n checkpoint=checkpoint||jsonb_build_object('stage','published'),updated_at=now()\n WHERE id=$1::uuid AND status='publishing' RETURNING id,job_id,result\n), logged AS (\n INSERT INTO yt_agent.audit(job_id,event,detail) SELECT job_id,'published',result FROM saved\n)\nUPDATE yt_agent.jobs j SET updated_at=now(), status=CASE\n WHEN EXISTS(SELECT 1 FROM yt_agent.publications p,saved s WHERE p.job_id=j.id AND p.id<>s.id AND p.status='uncertain') THEN 'uncertain'\n WHEN EXISTS(SELECT 1 FROM yt_agent.publications p,saved s WHERE p.job_id=j.id AND p.id<>s.id AND p.status='failed') THEN 'partial'\n WHEN EXISTS(SELECT 1 FROM yt_agent.publications p,saved s WHERE p.job_id=j.id AND p.id<>s.id AND p.status<>'published') THEN 'approved'\n ELSE 'published' END\nFROM saved s WHERE j.id=s.job_id RETURNING j.id::text AS job_id,j.status,s.result;",
+        "options": {
+          "queryReplacement": "={{ [$('Claim One Approved Publication').first().json.publication_id,JSON.stringify($json.result)] }}",
+          "queryBatching": "single"
+        }
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000035",
+      "name": "Save Published Result",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        5540,
+        -80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YT_AGENT_DATABASE_CREDENTIAL_ID",
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH marked AS (\n UPDATE yt_agent.publications SET status='failed',error=$2,updated_at=now()\n WHERE id=$1::uuid AND status='publishing' RETURNING job_id,id,checkpoint\n), logged AS (\n INSERT INTO yt_agent.audit(job_id,event,detail) SELECT job_id,'publication_failed',jsonb_build_object('publication_id',id,'checkpoint',checkpoint) FROM marked\n)\nUPDATE yt_agent.jobs j SET status='partial',error=$2,updated_at=now() FROM marked m WHERE j.id=m.job_id RETURNING j.id::text AS job_id,j.status,m.checkpoint;",
+        "options": {
+          "queryReplacement": "={{ [$('Claim One Approved Publication').first().json.publication_id,\"Pre-publication validation or processing failed. Inspect execution and approved artifact before a new attempt.\"] }}",
+          "queryBatching": "single"
+        }
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000036",
+      "name": "Record Definite Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        5540,
+        1200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YT_AGENT_DATABASE_CREDENTIAL_ID",
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH marked AS (\n UPDATE yt_agent.publications SET status='uncertain',error=$2,updated_at=now()\n WHERE id=$1::uuid AND status='publishing' RETURNING job_id,id,checkpoint\n), logged AS (\n INSERT INTO yt_agent.audit(job_id,event,detail) SELECT job_id,'publication_uncertain',jsonb_build_object('publication_id',id,'checkpoint',checkpoint) FROM marked\n)\nUPDATE yt_agent.jobs j SET status='uncertain',error=$2,updated_at=now() FROM marked m WHERE j.id=m.job_id RETURNING j.id::text AS job_id,j.status,m.checkpoint;",
+        "options": {
+          "queryReplacement": "={{ [$('Claim One Approved Publication').first().json.publication_id,\"External publication outcome is uncertain. Inspect saved session/container and provider account; do not requeue or start another upload.\"] }}",
+          "queryBatching": "single"
+        }
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000037",
+      "name": "Record Uncertain Outcome",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        5540,
+        1400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YT_AGENT_DATABASE_CREDENTIAL_ID",
+          "name": "YT-Agent Database"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "stopWorkflow"
+    },
+    {
+      "parameters": {
+        "content": "## Configure and import inactive\nUses only native n8n nodes: PostgreSQL, Crypto, HTTP Request, Wait, Code.\n\n1. Run workflow 00 schema setup; map YT-Agent Database, YouTube, Instagram credentials.\n2. Set Publisher Config allowedMediaHosts to exact render CDN hosts and publishingEnabled=true only after setup.\n3. Claim one approved artifact per tick. Immutable manifest SHA256 is checked in PostgreSQL, downloaded media SHA256/size is checked before provider calls.\n4. YouTube upload URL and Instagram container/publish intent persist before publication.\n\nNo HTTP mutation retries. A lost response becomes uncertain; the job stops. Never retry a failed execution from the mutating node or edit a publication back to pending. For YouTube reconcile the saved session with an empty PUT, Content-Range: bytes */TOTAL. For Instagram inspect container status and account media. These workflows do not promise exactly-once publication.\n\nUse durable immutable media URLs. Instagram fetches by URL after local verification; keep the same object available. No custom Python/API service.",
+        "height": 750,
+        "width": 650
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000038",
+      "name": "Read Before Enabling",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -850
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return [{json:$input.first().json,binary:$('Download Approved Media').first().binary}];"
+      },
+      "id": "e930b5c7-03ab-4d11-9000-000000000039",
+      "name": "Restore Downloaded Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    }
+  ],
+  "connections": {
+    "Validate Approved Asset": {
+      "main": [
+        [
+          {
+            "node": "Download Approved Media",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Definite Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Approved Media": {
+      "main": [
+        [
+          {
+            "node": "Hash Downloaded Media",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Definite Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hash Downloaded Media": {
+      "main": [
+        [
+          {
+            "node": "Restore Downloaded Binary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Definite Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Exact Media": {
+      "main": [
+        [
+          {
+            "node": "YouTube Asset",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Definite Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read YouTube Channel": {
+      "main": [
+        [
+          {
+            "node": "Verify YouTube Channel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Definite Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify YouTube Channel": {
+      "main": [
+        [
+          {
+            "node": "Start YouTube Resumable Session",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Definite Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start YouTube Resumable Session": {
+      "main": [
+        [
+          {
+            "node": "Validate YouTube Session",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate YouTube Session": {
+      "main": [
+        [
+          {
+            "node": "Save YouTube Session",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save YouTube Session": {
+      "main": [
+        [
+          {
+            "node": "Restore Verified YouTube Binary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Verified YouTube Binary": {
+      "main": [
+        [
+          {
+            "node": "Upload YouTube Bytes",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload YouTube Bytes": {
+      "main": [
+        [
+          {
+            "node": "YouTube Published Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube Published Result": {
+      "main": [
+        [
+          {
+            "node": "Save Published Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Instagram Account": {
+      "main": [
+        [
+          {
+            "node": "Verify Instagram Account",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Definite Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Instagram Account": {
+      "main": [
+        [
+          {
+            "node": "Create Instagram Container",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Definite Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Instagram Container": {
+      "main": [
+        [
+          {
+            "node": "Validate Instagram Container",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Instagram Container": {
+      "main": [
+        [
+          {
+            "node": "Save Instagram Container",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Instagram Container": {
+      "main": [
+        [
+          {
+            "node": "Read Instagram Container",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Instagram Container": {
+      "main": [
+        [
+          {
+            "node": "Classify Instagram Container",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Definite Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Instagram Container": {
+      "main": [
+        [
+          {
+            "node": "Instagram Ready",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Instagram Publish Intent": {
+      "main": [
+        [
+          {
+            "node": "Publish Instagram Container",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish Instagram Container": {
+      "main": [
+        [
+          {
+            "node": "Validate Instagram Media ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Instagram Media ID": {
+      "main": [
+        [
+          {
+            "node": "Save Instagram Media ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Instagram Media ID": {
+      "main": [
+        [
+          {
+            "node": "Read Instagram Permalink",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Instagram Permalink": {
+      "main": [
+        [
+          {
+            "node": "Instagram Published Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram Published Result": {
+      "main": [
+        [
+          {
+            "node": "Save Published Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Published Result": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Publisher": {
+      "main": [
+        [
+          {
+            "node": "Publisher Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publisher Schedule": {
+      "main": [
+        [
+          {
+            "node": "Publisher Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publisher Config": {
+      "main": [
+        [
+          {
+            "node": "Claim One Approved Publication",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim One Approved Publication": {
+      "main": [
+        [
+          {
+            "node": "Validate Approved Asset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube Asset": {
+      "main": [
+        [
+          {
+            "node": "Read YouTube Channel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read Instagram Account",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram Ready": {
+      "main": [
+        [
+          {
+            "node": "Save Instagram Publish Intent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Instagram Needs Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram Needs Wait": {
+      "main": [
+        [
+          {
+            "node": "Wait Before Instagram Poll",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Instagram Outcome Uncertain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Before Instagram Poll": {
+      "main": [
+        [
+          {
+            "node": "Read Instagram Container",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram Outcome Uncertain": {
+      "main": [
+        [
+          {
+            "node": "Record Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Definite Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Downloaded Binary": {
+      "main": [
+        [
+          {
+            "node": "Verify Exact Media",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Definite Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "executionTimeout": 1800,
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false
+  },
+  "pinData": {},
+  "tags": []
+}
