@@ -41,7 +41,7 @@
             {
               "id": "f5ab6c0a-cd65-4200-aa95-a137dc53956a",
               "name": "studio_url",
-              "value": "http://localhost:8000",
+              "value": "http://127.0.0.1:8000",
               "type": "string"
             },
             {

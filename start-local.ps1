@@ -30,7 +30,7 @@ if (-not $dockerOk) {
 if (-not (Test-Path .env)) { Copy-Item .env.example .env; Write-Host "Created .env" -ForegroundColor Green }
 $envText = Get-Content .env -Raw
 if (-not (Get-EnvValue 'DASHBOARD_TOKEN')) { $envText = Set-EnvValue $envText 'DASHBOARD_TOKEN' (Rand 24) }
-if (-not (Get-EnvValue 'STUDIO_INTERNAL_URL')) { $envText = Set-EnvValue $envText 'STUDIO_INTERNAL_URL' 'http://localhost:8000' }
+if (-not (Get-EnvValue 'STUDIO_INTERNAL_URL')) { $envText = Set-EnvValue $envText 'STUDIO_INTERNAL_URL' 'http://127.0.0.1:8000' }
 Set-Content .env $envText -NoNewline
 
 if (-not (Get-EnvValue 'PEXELS_API_KEY') -and -not (Get-EnvValue 'PIXABAY_API_KEY')) {

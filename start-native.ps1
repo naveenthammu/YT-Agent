@@ -38,7 +38,7 @@ Set-Location '$kokoro'; uv run --no-sync uvicorn api.src.main:app --host 127.0.0
 $s = @"
 `$env:DATA_DIR='$root\data'; `$env:MUSIC_DIR='$root\assets\music'
 `$env:KOKORO_URL='http://localhost:8880'
-`$env:PUBLIC_BASE_URL='http://${lan}:8000'; `$env:INTERNAL_BASE_URL='http://localhost:8000'
+`$env:PUBLIC_BASE_URL='http://${lan}:8000'; `$env:INTERNAL_BASE_URL='http://127.0.0.1:8000'
 `$env:FONT_FILE='C:\Windows\Fonts\arialbd.ttf'; `$env:FONT_NAME='Arial'
 `$env:PEXELS_API_KEY='$($cfg['PEXELS_API_KEY'])'; `$env:PIXABAY_API_KEY='$($cfg['PIXABAY_API_KEY'])'
 `$env:DASHBOARD_TOKEN='$($cfg['DASHBOARD_TOKEN'])'; `$env:MEDIA_RETENTION_DAYS='$($cfg['MEDIA_RETENTION_DAYS'])'

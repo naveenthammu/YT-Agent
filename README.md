@@ -87,7 +87,7 @@ Videos only get made while the PC and n8n are on.
    - workflow 2: `channel_id`, `telegram_chat_id`, and `dashboard_url` (use the `DASHBOARD_TOKEN` from `.env`),
    - workflow 3: the chat ID in its Telegram node.
 
-   Leave `studio_url` as `http://localhost:8000`. Error alerts are already linked.
+   Leave `studio_url` as `http://127.0.0.1:8000` (not `localhost`: n8n tries IPv6 first and the studio listens on IPv4 only). Error alerts are already linked.
 7. **Test:** open workflow 1 and click **Execute workflow**. The finished video arrives in Telegram as a playable video (if it's under 48 MB), followed by the review or upload message.
 
 Notes:
